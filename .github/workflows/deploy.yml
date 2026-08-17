@@ -18,9 +18,10 @@ jobs:
           username: root
           password: ${{ secrets.PASS }}
           envs: BOTTOKEN
-          script_stop: true
+          command_timeout: 10m
           script: |
             set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive
             APP_DIR=/opt/ordersvesta
             DOMAIN=ordersvesta.smarbiz.sbs
             REPO=https://github.com/hsdarestani/ordersvesta.git
@@ -50,14 +51,18 @@ jobs:
             cd "$APP_DIR"
             docker compose up -d --build --remove-orphans
 
-            # Hook the status endpoint to the requested domain when nginx can be used safely.
-            if command -v nginx >/dev/null 2>&1; then
-              cat > "/etc/nginx/sites-available/$DOMAIN" <<EOF
+            if ! command -v nginx >/dev/null 2>&1; then
+              apt-get update -qq
+              apt-get install -y nginx
+            fi
+
+            cat > "/etc/nginx/sites-available/$DOMAIN" <<EOF
             server {
                 listen 80;
                 server_name $DOMAIN;
                 location / {
                     proxy_pass http://127.0.0.1:8094;
+                    proxy_http_version 1.1;
                     proxy_set_header Host \$host;
                     proxy_set_header X-Real-IP \$remote_addr;
                     proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -65,34 +70,19 @@ jobs:
                 }
             }
             EOF
-              ln -sf "/etc/nginx/sites-available/$DOMAIN" "/etc/nginx/sites-enabled/$DOMAIN"
-              nginx -t
-              systemctl reload nginx
-              if ! command -v certbot >/dev/null 2>&1; then
-                apt-get update -qq
-                apt-get install -y certbot python3-certbot-nginx || true
-              fi
-              if command -v certbot >/dev/null 2>&1; then
-                certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect || true
-              fi
-            elif ! ss -ltn '( sport = :80 )' | grep -q LISTEN; then
-              apt-get update -qq
-              apt-get install -y nginx
-              cat > "/etc/nginx/sites-available/$DOMAIN" <<EOF
-            server {
-                listen 80;
-                server_name $DOMAIN;
-                location / { proxy_pass http://127.0.0.1:8094; }
-            }
-            EOF
-              ln -sf "/etc/nginx/sites-available/$DOMAIN" "/etc/nginx/sites-enabled/$DOMAIN"
-              nginx -t
-              systemctl reload nginx
-              apt-get install -y certbot python3-certbot-nginx || true
-              certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect || true
-            else
-              echo "Port 80 is managed by another service; bot is deployed and domain proxy was left untouched."
-            fi
+            ln -sf "/etc/nginx/sites-available/$DOMAIN" "/etc/nginx/sites-enabled/$DOMAIN"
+            rm -f /etc/nginx/sites-enabled/default
+            nginx -t
+            systemctl enable --now nginx
+            systemctl reload nginx
 
+            if ! command -v certbot >/dev/null 2>&1; then
+              apt-get update -qq
+              apt-get install -y certbot python3-certbot-nginx
+            fi
+            certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect || true
+
+            sleep 3
             docker compose ps
+            docker compose logs --tail=30 bot
             curl -fsS http://127.0.0.1:8094/health
