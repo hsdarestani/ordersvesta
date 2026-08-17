@@ -1,0 +1,98 @@
+name: Deploy OrdersVesta Bot
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          BOTTOKEN: ${{ secrets.BOTTOKEN }}
+        with:
+          host: ${{ secrets.HOST }}
+          username: root
+          password: ${{ secrets.PASS }}
+          envs: BOTTOKEN
+          script_stop: true
+          script: |
+            set -euo pipefail
+            APP_DIR=/opt/ordersvesta
+            DOMAIN=ordersvesta.smarbiz.sbs
+            REPO=https://github.com/hsdarestani/ordersvesta.git
+
+            if ! command -v docker >/dev/null 2>&1; then
+              curl -fsSL https://get.docker.com | sh
+            fi
+            if ! docker compose version >/dev/null 2>&1; then
+              apt-get update -qq
+              apt-get install -y docker-compose-plugin
+            fi
+
+            mkdir -p "$APP_DIR"
+            if [ ! -d "$APP_DIR/.git" ]; then
+              git clone "$REPO" "$APP_DIR"
+            else
+              git -C "$APP_DIR" fetch origin main
+              git -C "$APP_DIR" reset --hard origin/main
+            fi
+
+            cat > "$APP_DIR/.env" <<EOF
+            BOTTOKEN=$BOTTOKEN
+            SHOP_ID=7944
+            EOF
+            chmod 600 "$APP_DIR/.env"
+
+            cd "$APP_DIR"
+            docker compose up -d --build --remove-orphans
+
+            # Hook the status endpoint to the requested domain when nginx can be used safely.
+            if command -v nginx >/dev/null 2>&1; then
+              cat > "/etc/nginx/sites-available/$DOMAIN" <<EOF
+            server {
+                listen 80;
+                server_name $DOMAIN;
+                location / {
+                    proxy_pass http://127.0.0.1:8094;
+                    proxy_set_header Host \$host;
+                    proxy_set_header X-Real-IP \$remote_addr;
+                    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto \$scheme;
+                }
+            }
+            EOF
+              ln -sf "/etc/nginx/sites-available/$DOMAIN" "/etc/nginx/sites-enabled/$DOMAIN"
+              nginx -t
+              systemctl reload nginx
+              if ! command -v certbot >/dev/null 2>&1; then
+                apt-get update -qq
+                apt-get install -y certbot python3-certbot-nginx || true
+              fi
+              if command -v certbot >/dev/null 2>&1; then
+                certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect || true
+              fi
+            elif ! ss -ltn '( sport = :80 )' | grep -q LISTEN; then
+              apt-get update -qq
+              apt-get install -y nginx
+              cat > "/etc/nginx/sites-available/$DOMAIN" <<EOF
+            server {
+                listen 80;
+                server_name $DOMAIN;
+                location / { proxy_pass http://127.0.0.1:8094; }
+            }
+            EOF
+              ln -sf "/etc/nginx/sites-available/$DOMAIN" "/etc/nginx/sites-enabled/$DOMAIN"
+              nginx -t
+              systemctl reload nginx
+              apt-get install -y certbot python3-certbot-nginx || true
+              certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect || true
+            else
+              echo "Port 80 is managed by another service; bot is deployed and domain proxy was left untouched."
+            fi
+
+            docker compose ps
+            curl -fsS http://127.0.0.1:8094/health
