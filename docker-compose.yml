@@ -1,0 +1,16 @@
+services:
+  bot:
+    build: .
+    container_name: ordersvesta-bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SHOP_ID: "7944"
+      DATA_DIR: /app/data
+    volumes:
+      - ordersvesta_data:/app/data
+    ports:
+      - "127.0.0.1:8094:8080"
+
+volumes:
+  ordersvesta_data:
