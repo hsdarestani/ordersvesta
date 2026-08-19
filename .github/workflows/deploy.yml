@@ -42,6 +42,9 @@ jobs:
               git -C "$APP_DIR" reset --hard origin/main
             fi
 
+            mkdir -p "$APP_DIR/public_media"
+            chmod 755 "$APP_DIR/public_media"
+
             cat > "$APP_DIR/.env" <<EOF
             BOTTOKEN=$BOTTOKEN
             SHOP_ID=7944
@@ -60,6 +63,15 @@ jobs:
             server {
                 listen 80;
                 server_name $DOMAIN;
+
+                location ^~ /media/ {
+                    alias $APP_DIR/public_media/;
+                    autoindex off;
+                    add_header Cache-Control "private, no-store" always;
+                    add_header X-Robots-Tag "noindex, nofollow" always;
+                    sendfile on;
+                }
+
                 location / {
                     proxy_pass http://127.0.0.1:8094;
                     proxy_http_version 1.1;
@@ -67,6 +79,7 @@ jobs:
                     proxy_set_header X-Real-IP \$remote_addr;
                     proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
                     proxy_set_header X-Forwarded-Proto \$scheme;
+                    proxy_read_timeout 180s;
                 }
             }
             EOF
