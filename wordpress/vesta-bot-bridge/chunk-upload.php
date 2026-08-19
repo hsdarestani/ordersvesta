@@ -1,6 +1,6 @@
 <?php
 // Chunked signed-GET media transport for Vesta Bot Bridge.
-// Loaded by the main plugin file. Avoids outbound HTTP downloads and POST bodies.
+// Loaded as a companion plugin/module. Avoids outbound HTTP downloads and POST bodies.
 
 if (!defined('ABSPATH')) {
     exit;
@@ -180,16 +180,19 @@ function vbb_media_finish($payload) {
     return $result;
 }
 
-// Handle chunk-only operations before the main v2 dispatcher.
+// Handle chunk-only operations before the main v2 dispatcher. Check the raw op first;
+// otherwise merely inspecting a normal signed request would consume its nonce.
 add_action('template_redirect', function () {
     if (!function_exists('vbb_v2_request') || !vbb_v2_request()) {
         return;
     }
 
-    list($op, $payload) = vbb_v2_authorize();
-    if (!in_array($op, array('media_begin', 'media_chunk', 'media_finish'), true)) {
+    $raw_op = isset($_GET['o']) ? sanitize_key(wp_unslash($_GET['o'])) : '';
+    if (!in_array($raw_op, array('media_begin', 'media_chunk', 'media_finish'), true)) {
         return;
     }
+
+    list($op, $payload) = vbb_v2_authorize();
 
     try {
         if ($op === 'media_begin') {
