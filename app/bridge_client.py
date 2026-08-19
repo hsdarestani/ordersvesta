@@ -39,7 +39,7 @@ class BridgeWooClient:
         if not self.url or not self.token:
             raise RuntimeError('Bridge ووکامرس تنظیم نشده است. از «🔌 اتصال ووکامرس» استفاده کنید.')
         self.c = httpx.Client(
-            timeout=httpx.Timeout(90.0, connect=25.0),
+            timeout=httpx.Timeout(180.0, connect=25.0),
             follow_redirects=True,
             headers=BROWSER_HEADERS,
         )
@@ -73,14 +73,20 @@ class BridgeWooClient:
         return {'vbb': '2', 't': ts, 'n': nonce, 'o': op, 'd': packed, 's': sig}
 
     def _signed_get(self, op, payload=None):
-        params = self._signed_params(op, payload)
         errors = []
-        for endpoint in (f'{self.url}/', f'{self.url}/index.php'):
+        # IMPORTANT: each transport attempt gets a fresh nonce/signature. Reusing the
+        # same signed query on the fallback endpoint is correctly rejected by the
+        # WordPress bridge as a replay.
+        for label, endpoint in (
+            ('home', f'{self.url}/'),
+            ('index', f'{self.url}/index.php'),
+        ):
+            params = self._signed_params(op, payload)
             try:
                 r = self.c.get(endpoint, params=params)
                 return self._decode(r)
             except Exception as exc:
-                errors.append(str(exc))
+                errors.append(f'{label}: {exc}')
         raise RuntimeError('Signed GET Bridge ناموفق بود: ' + ' | '.join(errors[-2:]))
 
     def call(self, op, payload=None, file_path=None, filename=None):
@@ -105,6 +111,8 @@ class BridgeWooClient:
         target = MEDIA_DIR / public_name
         shutil.copyfile(path, target)
         try:
+            # /media is served directly by nginx from the host-mounted directory.
+            # WordPress no longer downloads the image through the Python bot process.
             return self._signed_get('import_media', {
                 'url': f'{PUBLIC_BASE}/media/{public_name}',
                 'filename': filename or public_name,
