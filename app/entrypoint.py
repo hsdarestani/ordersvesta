@@ -8,12 +8,14 @@ from app import runner  # noqa: F401
 from app import main as m
 # Import operations after runner so its fallback handlers point to the patched admin flows.
 from app import operations as ops
+# Variable builder wraps the WooCommerce text/callback flow for variable products.
+from app import variations as var
 
 
 # Apply menu / WooCommerce routers.
 m.start = ops.start
-m.text = ops.text
-m.callback = ops.callback
+m.text = var.text
+m.callback = var.callback
 m.photo = ops.photo
 
 
