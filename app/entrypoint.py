@@ -9,9 +9,9 @@ from app import main as m
 # Import operations and variable-product flow.
 from app import operations as ops
 from app import variations as var
-# Bridge is imported last so every WooCommerce call uses the local WordPress bridge
-# instead of WooCommerce REST authentication that the Vesta host/WAF blocks.
+# Bridge is imported last so every WooCommerce call uses the local WordPress bridge.
 from app import bridge_client  # noqa: F401
+from app.public_media import BridgeHTTP
 
 
 # Apply menu / WooCommerce routers.
@@ -22,7 +22,7 @@ m.photo = ops.photo
 
 
 def main():
-    health = m.ThreadingHTTPServer(('0.0.0.0', 8080), m.Health)
+    health = m.ThreadingHTTPServer(('0.0.0.0', 8080), BridgeHTTP)
     threading.Thread(target=health.serve_forever, daemon=True).start()
 
     a = Application.builder().token(m.TOKEN).build()
