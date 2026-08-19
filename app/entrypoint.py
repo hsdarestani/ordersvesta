@@ -8,6 +8,8 @@ from app import runner  # noqa: F401
 from app import main as m
 # Import operations after runner so its fallback handlers point to the patched admin flows.
 from app import operations as ops
+# Patch WooCommerce authentication for Vesta hosting before any product workflow runs.
+from app import woo_compat  # noqa: F401
 # Variable builder wraps the WooCommerce text/callback flow for variable products.
 from app import variations as var
 
