@@ -1,11 +1,35 @@
 import asyncio
+import base64
+import hashlib
+import hmac
 import json
-import mimetypes
+import os
+import secrets
+import shutil
+import time
+import zlib
 from pathlib import Path
 
 import httpx
 
 from app import operations as ops
+from app import main as m
+
+MEDIA_DIR = m.DATA / 'bridge_media'
+MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+PUBLIC_BASE = os.getenv('PUBLIC_BASE_URL', 'https://ordersvesta.smarbiz.sbs').rstrip('/')
+
+BROWSER_HEADERS = {
+    'accept': 'application/json,text/plain,*/*',
+    'accept-language': 'en-US,en;q=0.9',
+    'cache-control': 'no-cache',
+    'pragma': 'no-cache',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36',
+}
+
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode().rstrip('=')
 
 
 class BridgeWooClient:
@@ -14,7 +38,11 @@ class BridgeWooClient:
         self.token = ops.cfg_get('bridge_token') or ''
         if not self.url or not self.token:
             raise RuntimeError('Bridge ووکامرس تنظیم نشده است. از «🔌 اتصال ووکامرس» استفاده کنید.')
-        self.c = httpx.Client(timeout=httpx.Timeout(90.0, connect=25.0), follow_redirects=True)
+        self.c = httpx.Client(
+            timeout=httpx.Timeout(90.0, connect=25.0),
+            follow_redirects=True,
+            headers=BROWSER_HEADERS,
+        )
 
     def _decode(self, response):
         ctype = (response.headers.get('content-type') or '').lower()
@@ -35,60 +63,76 @@ class BridgeWooClient:
         data = body.get('data')
         return data if isinstance(data, dict) else {}
 
-    def _request_once(self, endpoint, op, payload=None, file_path=None, filename=None):
-        form = {
-            'op': op,
-            'token': self.token,
-            'payload': json.dumps(payload or {}, ensure_ascii=False),
-        }
-        files = None
-        handle = None
-        try:
-            if file_path:
-                handle = open(file_path, 'rb')
-                mime = mimetypes.guess_type(filename or str(file_path))[0] or 'application/octet-stream'
-                files = {'file': (filename or Path(file_path).name, handle, mime)}
-            response = self.c.post(endpoint, data=form, files=files)
-            return self._decode(response)
-        finally:
-            if handle:
-                handle.close()
+    def _signed_params(self, op, payload=None):
+        raw = json.dumps(payload or {}, ensure_ascii=False, separators=(',', ':')).encode()
+        packed = _b64url(zlib.compress(raw, 9)) if payload else ''
+        ts = str(int(time.time()))
+        nonce = secrets.token_hex(16)
+        message = f'v2|{ts}|{nonce}|{op}|{packed}'
+        sig = hmac.new(self.token.encode(), message.encode(), hashlib.sha256).hexdigest()
+        return {'vbb': '2', 't': ts, 'n': nonce, 'o': op, 'd': packed, 's': sig}
 
-    def call(self, op, payload=None, file_path=None, filename=None):
-        # First use the lightweight public bridge route. admin-ajax is a fallback for
-        # WordPress setups where template routing is altered by the theme/cache layer.
-        endpoints = [
-            f'{self.url}/?vesta_bot_bridge=1',
-            f'{self.url}/wp-admin/admin-ajax.php?action=vesta_bot_bridge',
-        ]
+    def _signed_get(self, op, payload=None):
+        params = self._signed_params(op, payload)
         errors = []
-        for endpoint in endpoints:
+        for endpoint in (f'{self.url}/', f'{self.url}/index.php'):
             try:
-                return self._request_once(endpoint, op, payload, file_path, filename)
+                r = self.c.get(endpoint, params=params)
+                return self._decode(r)
             except Exception as exc:
                 errors.append(str(exc))
-        raise RuntimeError('اتصال به Vesta Bot Bridge ناموفق بود: ' + ' | '.join(errors[-2:]))
+        raise RuntimeError('Signed GET Bridge ناموفق بود: ' + ' | '.join(errors[-2:]))
+
+    def call(self, op, payload=None, file_path=None, filename=None):
+        if file_path:
+            return self.upload_media(file_path, filename or Path(file_path).name)
+        return self._signed_get(op, payload)
 
     def probe(self):
-        return self.call('ping').get('product_count', '?')
+        return self._signed_get('ping').get('product_count', '?')
 
     def categories(self):
-        return self.call('categories').get('categories', [])
+        return self._signed_get('categories').get('categories', [])
 
     def recent_products(self):
-        return self.call('recent_products').get('products', [])
+        return self._signed_get('recent_products').get('products', [])
 
     def upload_media(self, path, filename):
-        return self.call('upload_media', file_path=path, filename=filename)
+        ext = Path(filename or str(path)).suffix.lower()
+        if ext not in {'.jpg', '.jpeg', '.png', '.webp'}:
+            ext = '.jpg'
+        public_name = f'{secrets.token_hex(24)}{ext}'
+        target = MEDIA_DIR / public_name
+        shutil.copyfile(path, target)
+        try:
+            return self._signed_get('import_media', {
+                'url': f'{PUBLIC_BASE}/media/{public_name}',
+                'filename': filename or public_name,
+            })
+        finally:
+            target.unlink(missing_ok=True)
 
     def create_product(self, data):
-        return self.call('create_product', payload=data)
+        return self._signed_get('create_product', data)
 
     def create_variation(self, product_id, payload):
-        return self.call('create_variation', payload={
+        return self._signed_get('create_variation', {
             'product_id': int(product_id),
             'variation': payload,
         })
+
+    def diagnostics(self):
+        out = []
+        for label, url in (
+            ('home', f'{self.url}/'),
+            ('wp-json', f'{self.url}/wp-json/'),
+        ):
+            try:
+                r = self.c.get(url)
+                out.append(f'{label}:{r.status_code}')
+            except Exception as exc:
+                out.append(f'{label}:{type(exc).__name__}')
+        return ', '.join(out)
 
 
 async def begin_woo_setup(update):
@@ -96,7 +140,7 @@ async def begin_woo_setup(update):
     ops.set_state(uid, 'woo_setup', 'url', {})
     await update.message.reply_text(
         '🔌 اتصال ووکامرس با Vesta Bot Bridge\n\n'
-        'اول افزونه Vesta Bot Bridge را روی سایت نصب و فعال کنید.\n'
+        'نسخه جدید افزونه Vesta Bot Bridge را روی سایت فعال کنید.\n'
         'بعد آدرس سایت را بفرستید؛ مثال:\nhttps://vesta-cosmetics.ir',
         reply_markup=ops.cancel_menu(),
     )
@@ -133,21 +177,23 @@ async def setup_text(update, state):
             total = await asyncio.to_thread(BridgeWooClient().probe)
             return await update.effective_chat.send_message(
                 f'✅ Vesta Bot Bridge متصل شد. {total} محصول قابل مشاهده است.\n\n'
-                'از این به بعد Consumer Key / Secret و Application Password لازم نیست.',
+                'Transport: Signed GET + HMAC v2',
                 reply_markup=ops.woo_menu(),
             )
         except Exception as exc:
+            try:
+                diag = await asyncio.to_thread(BridgeWooClient().diagnostics)
+            except Exception:
+                diag = 'diagnostic unavailable'
             return await update.effective_chat.send_message(
                 f'⚠️ اطلاعات Bridge ذخیره شد ولی تست اتصال موفق نبود:\n{exc}\n\n'
-                'مطمئن شوید افزونه فعال است و توکن را درست کپی کرده‌اید.',
+                f'تست دسترسی عمومی از سرور ربات: {diag}',
                 reply_markup=ops.woo_menu(),
             )
 
     return await update.message.reply_text('برای اتصال Bridge مرحله فعلی را کامل کنید.')
 
 
-# Replace WooCommerce networking and connection flow globally. The existing product,
-# category, photo and variation workflows continue to use ops.WooClient at runtime.
 ops.WooClient = BridgeWooClient
 ops.begin_woo_setup = begin_woo_setup
 ops.setup_text = setup_text
