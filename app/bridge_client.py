@@ -3,9 +3,7 @@ import base64
 import hashlib
 import hmac
 import json
-import os
 import secrets
-import shutil
 import time
 import zlib
 from pathlib import Path
@@ -13,11 +11,6 @@ from pathlib import Path
 import httpx
 
 from app import operations as ops
-from app import main as m
-
-MEDIA_DIR = m.DATA / 'bridge_media'
-MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-PUBLIC_BASE = os.getenv('PUBLIC_BASE_URL', 'https://ordersvesta.smarbiz.sbs').rstrip('/')
 
 BROWSER_HEADERS = {
     'accept': 'application/json,text/plain,*/*',
@@ -26,6 +19,9 @@ BROWSER_HEADERS = {
     'pragma': 'no-cache',
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36',
 }
+
+# Keep signed GET URLs comfortably below common proxy/WAF request-line limits.
+MEDIA_CHUNK_SIZE = 3072
 
 
 def _b64url(data: bytes) -> str:
@@ -74,9 +70,8 @@ class BridgeWooClient:
 
     def _signed_get(self, op, payload=None):
         errors = []
-        # IMPORTANT: each transport attempt gets a fresh nonce/signature. Reusing the
-        # same signed query on the fallback endpoint is correctly rejected by the
-        # WordPress bridge as a replay.
+        # Every transport attempt gets a fresh nonce/signature. Chunk writes are
+        # offset-based/idempotent, so retrying the same chunk is safe.
         for label, endpoint in (
             ('home', f'{self.url}/'),
             ('index', f'{self.url}/index.php'),
@@ -104,21 +99,35 @@ class BridgeWooClient:
         return self._signed_get('recent_products').get('products', [])
 
     def upload_media(self, path, filename):
-        ext = Path(filename or str(path)).suffix.lower()
-        if ext not in {'.jpg', '.jpeg', '.png', '.webp'}:
-            ext = '.jpg'
-        public_name = f'{secrets.token_hex(24)}{ext}'
-        target = MEDIA_DIR / public_name
-        shutil.copyfile(path, target)
-        try:
-            # /media is served directly by nginx from the host-mounted directory.
-            # WordPress no longer downloads the image through the Python bot process.
-            return self._signed_get('import_media', {
-                'url': f'{PUBLIC_BASE}/media/{public_name}',
-                'filename': filename or public_name,
+        # Do not ask WordPress/Zhaket Booster to download from an external domain.
+        # Transfer the image itself through small HMAC-signed GET chunks, then let
+        # WordPress assemble and sideload it locally into Media Library.
+        data = Path(path).read_bytes()
+        if not data:
+            raise RuntimeError('فایل تصویر خالی است.')
+
+        upload_id = secrets.token_hex(16)
+        digest = hashlib.sha256(data).hexdigest()
+        safe_name = Path(filename or str(path)).name or 'vesta-product.jpg'
+
+        begin = self._signed_get('media_begin', {
+            'upload_id': upload_id,
+            'filename': safe_name,
+            'size': len(data),
+            'sha256': digest,
+        })
+        if begin.get('already_finished') and isinstance(begin.get('result'), dict):
+            return begin['result']
+
+        for offset in range(0, len(data), MEDIA_CHUNK_SIZE):
+            chunk = data[offset:offset + MEDIA_CHUNK_SIZE]
+            self._signed_get('media_chunk', {
+                'upload_id': upload_id,
+                'offset': offset,
+                'data': _b64url(chunk),
             })
-        finally:
-            target.unlink(missing_ok=True)
+
+        return self._signed_get('media_finish', {'upload_id': upload_id})
 
     def create_product(self, data):
         return self._signed_get('create_product', data)
