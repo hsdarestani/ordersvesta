@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Vesta Bot Bridge
- * Description: Secure bridge between the Vesta Telegram bot and WooCommerce. Uses signed GET requests to bypass restrictive WAF rules.
- * Version: 1.1.0
+ * Description: Unified secure bridge between the Vesta Telegram bot and WooCommerce, including signed chunked media upload and variable-product type repair.
+ * Version: 1.2.0
  * Author: Vesta
  * Requires at least: 6.0
  * Requires PHP: 7.4
@@ -13,11 +13,18 @@ if (!defined('ABSPATH')) {
 }
 
 define('VBB_TOKEN_OPTION', 'vesta_bot_bridge_token');
-define('VBB_VERSION', '1.1.0');
+define('VBB_VERSION', '1.2.0');
+
+// All bridge features live inside this single WordPress plugin.
+require_once __DIR__ . '/chunk-upload.php';
+require_once __DIR__ . '/product-type.php';
 
 register_activation_hook(__FILE__, function () {
     if (!get_option(VBB_TOKEN_OPTION)) {
         update_option(VBB_TOKEN_OPTION, wp_generate_password(48, false, false), false);
+    }
+    if (function_exists('vbb_repair_existing_variable_products')) {
+        vbb_repair_existing_variable_products();
     }
 });
 
@@ -56,12 +63,20 @@ function vbb_admin_page() {
         echo '<div class="notice notice-success"><p>توکن جدید ساخته شد. توکن قبلی از همین لحظه نامعتبر است.</p></div>';
     }
 
+    if (isset($_POST['vbb_repair_types'])) {
+        check_admin_referer('vbb_repair_types');
+        if (function_exists('vbb_repair_existing_variable_products')) {
+            vbb_repair_existing_variable_products();
+        }
+        echo '<div class="notice notice-success"><p>نوع محصولات دارای Variation بررسی و اصلاح شد.</p></div>';
+    }
+
     $token = esc_attr(vbb_get_token());
     $endpoint = esc_html(vbb_endpoint_url());
     ?>
     <div class="wrap">
         <h1>Vesta Bot Bridge</h1>
-        <p>نسخه <?php echo esc_html(VBB_VERSION); ?> — اتصال امضاشده HMAC بدون WooCommerce REST Key و بدون Authorization Header.</p>
+        <p>نسخه <?php echo esc_html(VBB_VERSION); ?> — یک افزونه واحد برای اتصال امن ربات، آپلود سریع تصاویر و محصولات متغیر.</p>
         <table class="form-table" role="presentation">
             <tr>
                 <th>وضعیت WooCommerce</th>
@@ -72,6 +87,10 @@ function vbb_admin_page() {
                 <td><code><?php echo $endpoint; ?></code></td>
             </tr>
             <tr>
+                <th>امکانات داخلی</th>
+                <td>Signed GET + HMAC، آپلود Chunked بدون دانلود خارجی، اصلاح خودکار نوع Variable Product</td>
+            </tr>
+            <tr>
                 <th>Bridge Token</th>
                 <td>
                     <input id="vbb-token" type="text" readonly value="<?php echo $token; ?>" style="width:min(720px,100%);font-family:monospace" />
@@ -80,12 +99,16 @@ function vbb_admin_page() {
                 </td>
             </tr>
         </table>
-        <form method="post" onsubmit="return confirm('توکن قبلی فوراً باطل شود؟');">
+        <form method="post" style="display:inline-block;margin-left:8px" onsubmit="return confirm('توکن قبلی فوراً باطل شود؟');">
             <?php wp_nonce_field('vbb_regenerate_token'); ?>
             <button class="button button-secondary" name="vbb_regenerate" value="1">ساخت توکن جدید</button>
         </form>
+        <form method="post" style="display:inline-block">
+            <?php wp_nonce_field('vbb_repair_types'); ?>
+            <button class="button button-secondary" name="vbb_repair_types" value="1">اصلاح نوع محصولات متغیر قبلی</button>
+        </form>
         <hr />
-        <p><strong>بعد از آپدیت افزونه لازم نیست توکن قبلی را عوض کنید.</strong> داخل ربات فقط «وضعیت اتصال‌ها» را دوباره تست کنید.</p>
+        <p><strong>بعد از آپدیت افزونه لازم نیست توکن قبلی را عوض کنید.</strong> افزونه‌های Media Fix و Product Type Fix جداگانه دیگر لازم نیستند.</p>
     </div>
     <?php
 }
@@ -418,6 +441,10 @@ function vbb_create_product($data) {
         throw new Exception('Product could not be saved.');
     }
 
+    if ($type === 'variable' && function_exists('vbb_force_variable_product_type')) {
+        vbb_force_variable_product_type($id);
+    }
+
     return array(
         'id' => (int) $id,
         'name' => (string) $product->get_name(),
@@ -467,6 +494,9 @@ function vbb_create_variation($data) {
         throw new Exception('Variation could not be saved.');
     }
 
+    if (function_exists('vbb_force_variable_product_type')) {
+        vbb_force_variable_product_type($product_id);
+    }
     WC_Product_Variable::sync($product_id);
     wc_delete_product_transients($product_id);
 
