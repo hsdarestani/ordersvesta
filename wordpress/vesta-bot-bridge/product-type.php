@@ -1,6 +1,7 @@
 <?php
-// Product-type consistency for Vesta Bot Bridge.
-// Keeps parent products with variations stored as WooCommerce variable products.
+// Product consistency helpers for Vesta Bot Bridge.
+// Keeps variable product taxonomy correct and persists fields carried by the
+// signed create_product payload that are not handled by the core bridge object.
 
 if (!defined('ABSPATH')) {
     exit;
@@ -41,9 +42,60 @@ function vbb_repair_existing_variable_products() {
     }
 }
 
+function vbb_current_create_product_payload() {
+    if (!isset($_GET['vbb']) || (string) $_GET['vbb'] !== '2') {
+        return array();
+    }
+    $op = isset($_GET['o']) ? sanitize_key(wp_unslash($_GET['o'])) : '';
+    if ($op !== 'create_product') {
+        return array();
+    }
+    $encoded = isset($_GET['d']) ? (string) wp_unslash($_GET['d']) : '';
+    if ($encoded === '' || !function_exists('vbb_b64url_decode')) {
+        return array();
+    }
+    $compressed = vbb_b64url_decode($encoded);
+    if ($compressed === false) {
+        return array();
+    }
+    $json = @gzuncompress($compressed);
+    if ($json === false) {
+        return array();
+    }
+    $payload = json_decode($json, true);
+    return is_array($payload) ? $payload : array();
+}
+
 add_action('woocommerce_after_product_object_save', function ($product) {
-    if (is_object($product) && $product instanceof WC_Product_Variable) {
-        vbb_force_variable_product_type($product->get_id());
+    if (!is_object($product) || !method_exists($product, 'get_id')) {
+        return;
+    }
+
+    $product_id = absint($product->get_id());
+    if ($product instanceof WC_Product_Variable) {
+        vbb_force_variable_product_type($product_id);
+    }
+
+    // During a signed Bridge create_product call, persist caption/short description
+    // and weight directly. This avoids an extra REST endpoint and works for both
+    // simple and variable parents.
+    $payload = vbb_current_create_product_payload();
+    if (!$payload) {
+        return;
+    }
+
+    if (array_key_exists('short_description', $payload)) {
+        wp_update_post(array(
+            'ID' => $product_id,
+            'post_excerpt' => wp_kses_post((string) $payload['short_description']),
+        ));
+    }
+
+    if (isset($payload['weight']) && (string) $payload['weight'] !== '') {
+        $weight = function_exists('wc_format_decimal')
+            ? wc_format_decimal((string) $payload['weight'])
+            : sanitize_text_field((string) $payload['weight']);
+        update_post_meta($product_id, '_weight', $weight);
     }
 }, 999, 1);
 
