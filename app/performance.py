@@ -69,9 +69,42 @@ m.get = cached_get
 m.setv = cached_setv
 
 
-# Cache the allowed-user set briefly. This removes multiple SQLite reads from
-# every menu/callback event while /allow remains effective immediately enough.
+# Cache Woo connection config too. It is read repeatedly when buttons create
+# short-lived BridgeWooClient wrapper objects, while the actual HTTP pool is shared.
+_orig_cfg_get = ops.cfg_get
+_orig_cfg_set = ops.cfg_set
+_cfg_lock = threading.Lock()
+_cfg_cache = {}
+CFG_TTL = 60.0
+
+
+def cached_cfg_get(key, default=None):
+    now = time.monotonic()
+    with _cfg_lock:
+        item = _cfg_cache.get(key)
+        if item and now - item[0] < CFG_TTL:
+            return item[1]
+    value = _orig_cfg_get(key, default)
+    with _cfg_lock:
+        _cfg_cache[key] = (now, value)
+    return value
+
+
+def cached_cfg_set(key, value):
+    result = _orig_cfg_set(key, value)
+    with _cfg_lock:
+        _cfg_cache[key] = (time.monotonic(), str(value))
+    return result
+
+
+ops.cfg_get = cached_cfg_get
+ops.cfg_set = cached_cfg_set
+
+
+# Cache the allowed-user result briefly. /allow invalidates the relevant cache
+# entry immediately so newly granted access never has to wait for TTL expiry.
 _orig_allowed = m.allowed
+_orig_add_user = m.add_user
 _access_lock = threading.Lock()
 _access_cache = {}
 ACCESS_TTL = 15.0
@@ -90,7 +123,15 @@ def cached_allowed(uid):
     return value
 
 
+def fast_add_user(uid):
+    result = _orig_add_user(uid)
+    with _access_lock:
+        _access_cache.pop(int(uid), None)
+    return result
+
+
 m.allowed = cached_allowed
+m.add_user = fast_add_user
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +173,6 @@ _cache_lock = threading.Lock()
 _probe_cache = {}
 _category_cache = {}
 
-_orig_bridge_init = bridge.BridgeWooClient.__init__
 _orig_probe = bridge.BridgeWooClient.probe
 _orig_categories = bridge.BridgeWooClient.categories
 
