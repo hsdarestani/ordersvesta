@@ -11,7 +11,7 @@ from app import operations as ops
 from app import variations as var
 # Bridge is imported after product flows so every WooCommerce call uses the local WordPress bridge.
 from app import bridge_client  # noqa: F401
-# Product UX is imported last: it adds search-first category selection and faster media chunks.
+# Product UX is imported last: search-first categories, cover/gallery albums, progress and faster media.
 from app import product_ux as pux
 from app.public_media import BridgeHTTP
 
@@ -20,7 +20,7 @@ from app.public_media import BridgeHTTP
 m.start = ops.start
 m.text = pux.text
 m.callback = pux.callback
-m.photo = ops.photo
+m.photo = pux.photo
 
 
 def main():
