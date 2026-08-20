@@ -2,6 +2,7 @@ import threading
 
 from telegram import Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
+from telegram.request import HTTPXRequest
 
 # Import runner first: it applies resilient Shopino/Telegram networking and admin login patches.
 from app import runner  # noqa: F401
@@ -11,8 +12,10 @@ from app import operations as ops
 from app import variations as var
 # Bridge is imported after product flows so every WooCommerce call uses the local WordPress bridge.
 from app import bridge_client  # noqa: F401
-# Product UX is imported last: search-first categories, cover/gallery albums, progress and faster media.
+# Product UX is imported last: it adds search-first category selection and faster media chunks.
 from app import product_ux as pux
+# Global runtime optimizations: keep-alive pools, caches, fast SQLite and shared API clients.
+from app import performance  # noqa: F401
 from app.public_media import BridgeHTTP
 
 
@@ -27,7 +30,31 @@ def main():
     health = m.ThreadingHTTPServer(('0.0.0.0', 8080), BridgeHTTP)
     threading.Thread(target=health.serve_forever, daemon=True).start()
 
-    a = Application.builder().token(m.TOKEN).build()
+    # A larger persistent Telegram connection pool plus concurrent update processing
+    # prevents a slow image/API request from blocking unrelated button presses/messages.
+    request = HTTPXRequest(
+        connection_pool_size=32,
+        connect_timeout=10.0,
+        read_timeout=30.0,
+        write_timeout=30.0,
+        pool_timeout=5.0,
+    )
+    updates_request = HTTPXRequest(
+        connection_pool_size=8,
+        connect_timeout=10.0,
+        read_timeout=45.0,
+        write_timeout=15.0,
+        pool_timeout=5.0,
+    )
+
+    a = (
+        Application.builder()
+        .token(m.TOKEN)
+        .request(request)
+        .get_updates_request(updates_request)
+        .concurrent_updates(8)
+        .build()
+    )
     a.add_handler(CommandHandler('start', m.start))
     a.add_handler(CommandHandler('help', m.start))
     a.add_handler(CommandHandler('login', m.login_cmd))
@@ -40,7 +67,7 @@ def main():
     a.add_handler(MessageHandler(filters.PHOTO, m.photo))
     a.add_handler(MessageHandler(filters.Document.ALL, m.document))
     a.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, m.text))
-    a.run_polling(allowed_updates=Update.ALL_TYPES)
+    a.run_polling(allowed_updates=Update.ALL_TYPES, poll_interval=0.0, timeout=20)
 
 
 if __name__ == '__main__':
