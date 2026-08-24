@@ -18,14 +18,19 @@ from app import product_ux as pux
 from app import performance  # noqa: F401
 # Optional-weight wrapper adds a "skip weight" button without changing the rest of the product flow.
 from app import weight_optional as wopt
+# Site-tracking wrapper adds direct spreadsheet import into the site's tracking table.
+from app import site_tracking as st
 from app.public_media import BridgeHTTP
 
+# Preserve the optional-weight flow under the site-tracking text router.
+st.ORIG_TEXT = wopt.text
 
-# Apply menu / WooCommerce routers.
+# Apply menu / WooCommerce / site-tracking routers.
 m.start = ops.start
-m.text = wopt.text
+m.text = st.text
 m.callback = wopt.callback
 m.photo = pux.photo
+m.document = st.document
 
 
 def main():
