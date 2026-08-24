@@ -16,13 +16,15 @@ from app import bridge_client  # noqa: F401
 from app import product_ux as pux
 # Global runtime optimizations: keep-alive pools, caches, fast SQLite and shared API clients.
 from app import performance  # noqa: F401
+# Optional-weight wrapper adds a "skip weight" button without changing the rest of the product flow.
+from app import weight_optional as wopt
 from app.public_media import BridgeHTTP
 
 
 # Apply menu / WooCommerce routers.
 m.start = ops.start
-m.text = pux.text
-m.callback = pux.callback
+m.text = wopt.text
+m.callback = wopt.callback
 m.photo = pux.photo
 
 
