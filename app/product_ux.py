@@ -5,6 +5,7 @@ import secrets
 import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -323,7 +324,54 @@ def _parse_weight(text):
 # Search-first category selector
 # ---------------------------------------------------------------------------
 def _norm(value):
-    return m.norm(str(value or ''), True)
+    # Keep word boundaries.  The old implementation used compact=True, which
+    # turned e.g. "مراقبت پوست" into one token ("مراقبتپوست").  As a result,
+    # the token-overlap fallback below could never match natural multi-word
+    # searches unless the complete phrase happened to be a literal substring.
+    return m.norm(str(value or ''), False)
+
+
+CATEGORY_PHRASE_ALIASES = (
+    (re.compile(r'\bپاک\s*کننده(?:\s*ها)?\b'), 'شوینده'),
+    (re.compile(r'\bفیس\s*واش\b'), 'شوینده'),
+    (re.compile(r'\bاسکین\s*کر\b'), 'مراقبت پوست'),
+)
+
+CATEGORY_TOKEN_ALIASES = {
+    'شستشو': 'شوینده',
+    'شستشوی': 'شوینده',
+    'پاککننده': 'شوینده',
+    'کلینزر': 'شوینده',
+    'پوستی': 'پوست',
+    'مراقبتی': 'مراقبت',
+    'آرایشی': 'آرایش',
+    'بهداشتی': 'بهداشت',
+    'موها': 'مو',
+}
+
+CATEGORY_STOPWORDS = {
+    'از', 'با', 'برای', 'به', 'بندی', 'در', 'دسته', 'محصول', 'محصولات',
+    'لوازم', 'انواع', 'و',
+}
+
+
+def _canonical_category_text(value):
+    text = _norm(value)
+    for pattern, replacement in CATEGORY_PHRASE_ALIASES:
+        text = pattern.sub(replacement, text)
+    tokens = [CATEGORY_TOKEN_ALIASES.get(token, token) for token in text.split()]
+    return ' '.join(tokens)
+
+
+def _meaningful_words(value):
+    return [
+        token for token in _canonical_category_text(value).split()
+        if token and token not in CATEGORY_STOPWORDS
+    ]
+
+
+def _meaningful_tokens(value):
+    return set(_meaningful_words(value))
 
 
 def _query_parts(text):
@@ -332,33 +380,60 @@ def _query_parts(text):
 
 
 def _category_score(name, queries):
-    n = _norm(name)
+    n = _canonical_category_text(name)
     if not n:
         return 0
-    ntokens = set(n.split())
-    best = 0
+    nwords = _meaningful_words(n)
+    ncompact = ''.join(nwords)
+    ntokens = set(nwords)
+    scores = []
     for query in queries:
-        q = _norm(query)
+        q = _canonical_category_text(query)
         if not q:
             continue
-        if n == q:
-            score = 1000
-        elif q in n:
-            score = 700 - min(100, max(0, len(n) - len(q)))
-        elif n in q:
-            score = 620
+        qwords = _meaningful_words(q)
+        qcompact = ''.join(qwords)
+        qtokens = set(qwords)
+        if ncompact == qcompact:
+            score = 1200 + min(120, max(0, len(nwords) - 1) * 80)
+        elif qcompact in ncompact:
+            score = 900 - min(120, max(0, len(ncompact) - len(qcompact)))
+        elif ncompact in qcompact:
+            # Prefer the most specific category contained in a longer natural
+            # query: "شوینده صورت" should rank above the generic "صورت".
+            score = 820 + min(240, max(0, len(nwords) - 1) * 120)
         else:
-            qtokens = set(q.split())
             overlap = len(qtokens & ntokens)
-            if not overlap:
-                score = 0
+            if overlap:
+                query_coverage = overlap / max(1, len(qtokens))
+                category_coverage = overlap / max(1, len(ntokens))
+                score = round(
+                    (query_coverage * 360)
+                    + (category_coverage * 300)
+                    + (overlap * 90)
+                )
             else:
-                score = overlap * 120
-                if qtokens and qtokens.issubset(ntokens):
-                    score += 220
-                score -= abs(len(ntokens) - len(qtokens)) * 5
-        best = max(best, score)
-    return best
+                # Typo tolerance is deliberately token-based and conservative;
+                # it catches inputs such as "شویننده" without suggesting an
+                # unrelated category merely because a short substring matches.
+                similarity = max(
+                    (
+                        SequenceMatcher(None, qtoken, ntoken).ratio()
+                        for qtoken in qtokens if len(qtoken) >= 3
+                        for ntoken in ntokens if len(ntoken) >= 3
+                    ),
+                    default=0,
+                )
+                score = round(similarity * 420) if similarity >= 0.72 else 0
+        if score > 0:
+            scores.append(score)
+
+    if not scores:
+        return 0
+    scores.sort(reverse=True)
+    # Reward a category that matches several requested terms (for example both
+    # "شوینده" and "صورت") while keeping the best individual match dominant.
+    return scores[0] + round(sum(scores[1:]) * 0.45)
 
 
 def category_matches(cache, query, limit=14):
