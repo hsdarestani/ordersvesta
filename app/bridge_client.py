@@ -22,7 +22,7 @@ BROWSER_HEADERS = {
 
 # Keep signed GET URLs comfortably below common proxy/WAF request-line limits.
 MEDIA_CHUNK_SIZE = 3072
-BRIDGE_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=5.0)
+BRIDGE_TIMEOUT = httpx.Timeout(connect=12.0, read=10.0, write=10.0, pool=5.0)
 BRIDGE_LIMITS = httpx.Limits(max_connections=20, max_keepalive_connections=10, keepalive_expiry=30.0)
 TRANSIENT_ERRORS = (
     asyncio.TimeoutError,
@@ -30,6 +30,24 @@ TRANSIENT_ERRORS = (
     httpx.ConnectError,
     httpx.NetworkError,
     httpx.RemoteProtocolError,
+)
+
+# BridgeWooClient instances are intentionally cheap, but the underlying transports
+# are shared. The Iran-hosted shop has a slow TLS cold start; throwing the pool away
+# on every Telegram action made every action pay that handshake cost again.
+_SYNC_CLIENT = httpx.Client(
+    timeout=BRIDGE_TIMEOUT,
+    follow_redirects=True,
+    headers=BROWSER_HEADERS,
+    limits=BRIDGE_LIMITS,
+    trust_env=False,
+)
+_ASYNC_CLIENT = httpx.AsyncClient(
+    timeout=BRIDGE_TIMEOUT,
+    follow_redirects=True,
+    headers=BROWSER_HEADERS,
+    limits=BRIDGE_LIMITS,
+    trust_env=False,
 )
 
 
@@ -43,20 +61,8 @@ class BridgeWooClient:
         self.token = ops.cfg_get('bridge_token') or ''
         if not self.url or not self.token:
             raise RuntimeError('Bridge ووکامرس تنظیم نشده است. از «🔌 اتصال ووکامرس» استفاده کنید.')
-        self.c = httpx.Client(
-            timeout=BRIDGE_TIMEOUT,
-            follow_redirects=True,
-            headers=BROWSER_HEADERS,
-            limits=BRIDGE_LIMITS,
-            trust_env=False,
-        )
-        self.ac = httpx.AsyncClient(
-            timeout=BRIDGE_TIMEOUT,
-            follow_redirects=True,
-            headers=BROWSER_HEADERS,
-            limits=BRIDGE_LIMITS,
-            trust_env=False,
-        )
+        self.c = _SYNC_CLIENT
+        self.ac = _ASYNC_CLIENT
 
     def _decode(self, response):
         ctype = (response.headers.get('content-type') or '').lower()
@@ -102,7 +108,7 @@ class BridgeWooClient:
             try:
                 # Reserve time for the fallback endpoint instead of spending the
                 # whole retry budget on the same WordPress rewrite route.
-                r = self.c.get(endpoint, params=params, timeout=min(7.0, remaining))
+                r = self.c.get(endpoint, params=params, timeout=min(12.0, remaining))
                 return self._decode(r)
             except TRANSIENT_ERRORS as exc:
                 errors.append(f'{label}: {exc}')
@@ -126,7 +132,7 @@ class BridgeWooClient:
             params = self._signed_params(op, payload)
             try:
                 response = await asyncio.wait_for(
-                    self.ac.get(endpoint, params=params), timeout=min(7.0, remaining)
+                    self.ac.get(endpoint, params=params), timeout=min(12.0, remaining)
                 )
                 return self._decode(response)
             except TRANSIENT_ERRORS as exc:
@@ -138,8 +144,8 @@ class BridgeWooClient:
         raise RuntimeError('Signed GET Bridge ناموفق بود: ' + ' | '.join(errors[-2:]))
 
     async def aclose(self):
-        await self.ac.aclose()
-        self.c.close()
+        # Shared pools live for the bot process lifetime.
+        return None
 
     async def aprobe(self):
         return (await self._async_signed_get('ping')).get('product_count', '?')
