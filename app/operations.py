@@ -74,6 +74,11 @@ def clear_state(uid):
         c.execute('DELETE FROM op_state WHERE user=?', (uid,))
 
 
+def reset_user_flow(user_id):
+    """Single exit point for every top-level navigation/cancel action."""
+    clear_state(user_id)
+
+
 def main_menu():
     return ReplyKeyboardMarkup([
         ['📦 رهگیری شاپینو', '🛍 مدیریت ووکامرس'],
@@ -227,7 +232,7 @@ def money(v):
 async def start(update, ctx):
     if not await m.access(update):
         return
-    clear_state(update.effective_user.id)
+    reset_user_flow(update.effective_user.id)
     await update.message.reply_text(
         'پنل عملیاتی Vesta آماده است. از منوی زیر بخش موردنظر را انتخاب کنید.',
         reply_markup=main_menu(),
@@ -308,13 +313,24 @@ async def setup_text(update, state):
 
 
 async def begin_product(update):
-    try:
-        await asyncio.to_thread(WooClient().probe)
-    except Exception as exc:
-        return await update.message.reply_text(f'اول اتصال ووکامرس را تنظیم کنید:\n{exc}', reply_markup=woo_menu())
     uid = update.effective_user.id
-    set_state(uid, 'woo_product', 'name', {'images': [], 'categories': [], 'category_page': 0})
-    await update.message.reply_text('➕ ثبت محصول جدید\n\nاسم محصول را بفرستید.', reply_markup=cancel_menu())
+    reset_user_flow(uid)
+    progress = await update.message.reply_text('⏳ در حال بررسی اتصال ووکامرس…', reply_markup=woo_menu())
+
+    async def prepare():
+        client = WooClient()
+        try:
+            total = await client.aprobe() if hasattr(client, 'aprobe') else await asyncio.to_thread(client.probe)
+            set_state(uid, 'woo_product', 'name', {'images': [], 'categories': [], 'category_page': 0})
+            await progress.edit_text(f'✅ اتصال برقرار است ({total} محصول).\n\nاسم محصول را بفرستید.')
+            await update.effective_chat.send_message('➕ ثبت محصول جدید', reply_markup=cancel_menu())
+        except Exception as exc:
+            await progress.edit_text(f'❌ اول اتصال ووکامرس را تنظیم کنید:\n{exc}')
+        finally:
+            if hasattr(client, 'aclose'):
+                await client.aclose()
+
+    asyncio.create_task(prepare())
 
 
 async def product_text(update, state):
@@ -536,8 +552,19 @@ async def text(update, ctx):
     text_value = (update.message.text or '').strip()
 
     if text_value in {'❌ لغو عملیات', '⬅️ منوی اصلی'}:
-        clear_state(uid)
+        reset_user_flow(uid)
         return await update.message.reply_text('منوی اصلی:', reply_markup=main_menu())
+
+    # Navigation always wins over a stale conversation state.
+    navigation = {
+        '📦 رهگیری شاپینو': ('بخش رهگیری شاپینو:', shopino_menu),
+        '🛍 مدیریت ووکامرس': ('مدیریت ووکامرس:', woo_menu),
+        '⚙️ تنظیمات و اتصال‌ها': ('تنظیمات و اتصال‌ها:', settings_menu),
+    }
+    if text_value in navigation:
+        reset_user_flow(uid)
+        label, menu_factory = navigation[text_value]
+        return await update.message.reply_text(label, reply_markup=menu_factory())
 
     state = get_state(uid)
     if state:
@@ -546,12 +573,6 @@ async def text(update, ctx):
         if state['flow'] == 'woo_product':
             return await product_text(update, state)
 
-    if text_value == '📦 رهگیری شاپینو':
-        return await update.message.reply_text('بخش رهگیری شاپینو:', reply_markup=shopino_menu())
-    if text_value == '🛍 مدیریت ووکامرس':
-        return await update.message.reply_text('مدیریت ووکامرس:', reply_markup=woo_menu())
-    if text_value == '⚙️ تنظیمات و اتصال‌ها':
-        return await update.message.reply_text('تنظیمات و اتصال‌ها:', reply_markup=settings_menu())
     if text_value == '👥 کاربران و دسترسی':
         return await update.message.reply_text(
             'برای دیدن کاربران /users و برای اضافه‌کردن ادمین /allow TELEGRAM_ID را بزنید.',

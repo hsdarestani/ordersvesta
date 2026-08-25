@@ -22,7 +22,7 @@ TRACKING_CHUNK_CONCURRENCY = 6
 
 def main_menu():
     return ReplyKeyboardMarkup([
-        ['📦 رهگیری شاپینو', '📮 رهگیری سایت'],
+        ['📦 رهگیری شاپینو', '📦 مدیریت ارسال‌ها'],
         ['🛍 مدیریت ووکامرس', '⚙️ تنظیمات و اتصال‌ها'],
         ['👥 کاربران و دسترسی'],
     ], resize_keyboard=True)
@@ -30,7 +30,7 @@ def main_menu():
 
 def site_tracking_menu():
     return ReplyKeyboardMarkup([
-        ['📤 آپلود اکسل رهگیری سایت', '📊 وضعیت رهگیری سایت'],
+        ['📤 آپلود اکسل کد رهگیری', '📊 وضعیت رهگیری'],
         ['⬅️ منوی اصلی'],
     ], resize_keyboard=True)
 
@@ -141,15 +141,15 @@ async def text(update, ctx):
     uid = update.effective_user.id
     value = (update.message.text or '').strip()
 
-    if value == '📮 رهگیری سایت':
-        ops.clear_state(uid)
+    if value == '📦 مدیریت ارسال‌ها':
+        ops.reset_user_flow(uid)
         return await update.message.reply_text(
             '📮 رهگیری پستی سایت\n\n'
             'از این بخش همان فایل XLSX/XLSM/CSV که قبلاً داخل افزونه سایت آپلود می‌کردید را مستقیم از تلگرام می‌فرستید.',
             reply_markup=site_tracking_menu(),
         )
 
-    if value == '📤 آپلود اکسل رهگیری سایت':
+    if value == '📤 آپلود اکسل کد رهگیری':
         # Fail early if the tracking plugin has not been upgraded yet.
         try:
             status = await tracking_status()
@@ -169,7 +169,7 @@ async def text(update, ctx):
             reply_markup=ops.cancel_menu(),
         )
 
-    if value == '📊 وضعیت رهگیری سایت':
+    if value == '📊 وضعیت رهگیری':
         try:
             status = await tracking_status()
             return await update.message.reply_text(
@@ -189,7 +189,7 @@ async def text(update, ctx):
     state = ops.get_state(uid)
     if state and state.get('flow') == 'site_tracking':
         if value in {'❌ لغو عملیات', '⬅️ منوی اصلی'}:
-            ops.clear_state(uid)
+            ops.reset_user_flow(uid)
             return await update.message.reply_text('منوی اصلی:', reply_markup=main_menu())
         return await update.message.reply_text(
             'فایل XLSX/XLSM/CSV را همینجا ارسال کنید یا عملیات را لغو کنید.',
@@ -226,7 +226,7 @@ async def document(update, ctx):
         await runner.download_telegram_file(doc, tmp)
         await _safe_edit(msg, '✅ فایل دریافت شد.\n📤 در حال ارسال امن به سایت…\n' + _progress_bar(15))
         result = await upload_tracking_file(tmp, filename, msg)
-        ops.clear_state(uid)
+        ops.reset_user_flow(uid)
         await _safe_edit(msg, '✅ ورود فایل به سایت کامل شد.\n' + _progress_bar(100))
         return await update.effective_chat.send_message(
             '📮 نتیجه ثبت رهگیری در سایت\n\n'

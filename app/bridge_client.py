@@ -22,6 +22,15 @@ BROWSER_HEADERS = {
 
 # Keep signed GET URLs comfortably below common proxy/WAF request-line limits.
 MEDIA_CHUNK_SIZE = 3072
+BRIDGE_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=5.0)
+BRIDGE_LIMITS = httpx.Limits(max_connections=20, max_keepalive_connections=10, keepalive_expiry=30.0)
+TRANSIENT_ERRORS = (
+    asyncio.TimeoutError,
+    httpx.TimeoutException,
+    httpx.ConnectError,
+    httpx.NetworkError,
+    httpx.RemoteProtocolError,
+)
 
 
 def _b64url(data: bytes) -> str:
@@ -35,9 +44,18 @@ class BridgeWooClient:
         if not self.url or not self.token:
             raise RuntimeError('Bridge ووکامرس تنظیم نشده است. از «🔌 اتصال ووکامرس» استفاده کنید.')
         self.c = httpx.Client(
-            timeout=httpx.Timeout(180.0, connect=25.0),
+            timeout=BRIDGE_TIMEOUT,
             follow_redirects=True,
             headers=BROWSER_HEADERS,
+            limits=BRIDGE_LIMITS,
+            trust_env=False,
+        )
+        self.ac = httpx.AsyncClient(
+            timeout=BRIDGE_TIMEOUT,
+            follow_redirects=True,
+            headers=BROWSER_HEADERS,
+            limits=BRIDGE_LIMITS,
+            trust_env=False,
         )
 
     def _decode(self, response):
@@ -70,6 +88,7 @@ class BridgeWooClient:
 
     def _signed_get(self, op, payload=None):
         errors = []
+        deadline = time.monotonic() + 15.0
         # Every transport attempt gets a fresh nonce/signature. Chunk writes are
         # offset-based/idempotent, so retrying the same chunk is safe.
         for label, endpoint in (
@@ -77,12 +96,69 @@ class BridgeWooClient:
             ('index', f'{self.url}/index.php'),
         ):
             params = self._signed_params(op, payload)
-            try:
-                r = self.c.get(endpoint, params=params)
-                return self._decode(r)
-            except Exception as exc:
-                errors.append(f'{label}: {exc}')
+            for attempt in range(2):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    r = self.c.get(endpoint, params=params, timeout=min(10.0, remaining))
+                    # Authentication/configuration failures are never retried.
+                    if r.status_code in (401, 403):
+                        return self._decode(r)
+                    return self._decode(r)
+                except TRANSIENT_ERRORS as exc:
+                    errors.append(f'{label}: {exc}')
+                    if attempt == 0:
+                        time.sleep(0.25)
+                        params = self._signed_params(op, payload)
+                except RuntimeError:
+                    raise
+                except Exception as exc:
+                    errors.append(f'{label}: {exc}')
+                    break
         raise RuntimeError('Signed GET Bridge ناموفق بود: ' + ' | '.join(errors[-2:]))
+
+    async def _async_signed_get(self, op, payload=None):
+        """Async Bridge transport for handlers; all retries share a 15-second budget."""
+        errors = []
+        deadline = time.monotonic() + 15.0
+        for label, endpoint in (
+            ('home', f'{self.url}/'),
+            ('index', f'{self.url}/index.php'),
+        ):
+            for attempt in range(2):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                params = self._signed_params(op, payload)
+                try:
+                    response = await asyncio.wait_for(self.ac.get(endpoint, params=params), timeout=remaining)
+                    if response.status_code in (401, 403):
+                        return self._decode(response)
+                    return self._decode(response)
+                except TRANSIENT_ERRORS as exc:
+                    errors.append(f'{label}: {exc}')
+                    if attempt == 0:
+                        await asyncio.sleep(0.25)
+                except RuntimeError:
+                    raise
+                except Exception as exc:
+                    errors.append(f'{label}: {exc}')
+                    break
+        raise RuntimeError('Signed GET Bridge ناموفق بود: ' + ' | '.join(errors[-2:]))
+
+    async def aclose(self):
+        await self.ac.aclose()
+        self.c.close()
+
+    async def aprobe(self):
+        return (await self._async_signed_get('ping')).get('product_count', '?')
+
+    async def acategories(self):
+        return (await self._async_signed_get('categories')).get('categories', [])
+
+    async def arecent_products(self):
+        return (await self._async_signed_get('recent_products')).get('products', [])
 
     def call(self, op, payload=None, file_path=None, filename=None):
         if file_path:
@@ -185,28 +261,31 @@ async def setup_text(update, state):
             return await update.message.reply_text('Bridge Token معتبر به نظر نمی‌رسد. دوباره کپی و ارسال کنید.')
         ops.cfg_set('url', data['url'])
         ops.cfg_set('bridge_token', token)
-        ops.clear_state(uid)
+        ops.reset_user_flow(uid)
         try:
             await update.message.delete()
         except Exception:
             pass
-        try:
-            total = await asyncio.to_thread(BridgeWooClient().probe)
-            return await update.effective_chat.send_message(
-                f'✅ Vesta Bot Bridge متصل شد. {total} محصول قابل مشاهده است.\n\n'
-                'Transport: Signed GET + HMAC v2',
-                reply_markup=ops.woo_menu(),
-            )
-        except Exception as exc:
+        status = await update.effective_chat.send_message(
+            '⏳ اطلاعات ذخیره شد؛ اتصال Bridge در پس‌زمینه بررسی می‌شود…',
+            reply_markup=ops.woo_menu(),
+        )
+
+        async def verify_bridge():
+            client = BridgeWooClient()
             try:
-                diag = await asyncio.to_thread(BridgeWooClient().diagnostics)
-            except Exception:
-                diag = 'diagnostic unavailable'
-            return await update.effective_chat.send_message(
-                f'⚠️ اطلاعات Bridge ذخیره شد ولی تست اتصال موفق نبود:\n{exc}\n\n'
-                f'تست دسترسی عمومی از سرور ربات: {diag}',
-                reply_markup=ops.woo_menu(),
-            )
+                total = await client.aprobe()
+                await status.edit_text(
+                    f'✅ Vesta Bot Bridge متصل شد. {total} محصول قابل مشاهده است.\n\n'
+                    'Transport: Async Signed GET + HMAC v2'
+                )
+            except Exception as exc:
+                await status.edit_text(f'⚠️ اطلاعات ذخیره شد ولی تست اتصال موفق نبود:\n{exc}')
+            finally:
+                await client.aclose()
+
+        asyncio.create_task(verify_bridge())
+        return None
 
     return await update.message.reply_text('برای اتصال Bridge مرحله فعلی را کامل کنید.')
 
