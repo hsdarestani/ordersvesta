@@ -16,8 +16,12 @@ from app import runner
 ORIG_TEXT = pux.text
 ORIG_DOCUMENT = m.document
 
-TRACKING_CHUNK_SIZE = 5120
-TRACKING_CHUNK_CONCURRENCY = 6
+# The shop WAF treats bursts of large signed query strings as abusive traffic.
+# Tracking uploads must be deliberately sequential so they never throttle/block
+# the bot server IP and break unrelated WooCommerce operations afterwards.
+TRACKING_CHUNK_SIZE = 3072
+TRACKING_CHUNK_CONCURRENCY = 1
+TRACKING_CHUNK_PAUSE_SECONDS = 0.15
 
 
 def main_menu():
@@ -94,7 +98,7 @@ async def upload_tracking_file(path, filename, progress_message=None):
 
     async def send_one(offset, chunk):
         async with sem:
-            return await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 client._signed_get,
                 'vpt_import_chunk',
                 {
@@ -103,22 +107,33 @@ async def upload_tracking_file(path, filename, progress_message=None):
                     'data': bridge._b64url(chunk),
                 },
             )
+            await asyncio.sleep(TRACKING_CHUNK_PAUSE_SECONDS)
+            return result
 
     tasks = [asyncio.create_task(send_one(offset, chunk)) for offset, chunk in chunks]
     completed = 0
     last_percent = -1
-    for task in asyncio.as_completed(tasks):
-        await task
-        completed += 1
-        # File transfer occupies 15..80 percent. Avoid excessive Telegram edits.
-        percent = 15 + round(65 * completed / max(1, total))
-        if progress_message and (percent >= last_percent + 5 or completed == total):
-            last_percent = percent
-            await _safe_edit(
-                progress_message,
-                '📤 در حال انتقال فایل رهگیری به سایت…\n'
-                f'{completed}/{total} بخش\n{_progress_bar(percent)}',
-            )
+    try:
+        for task in asyncio.as_completed(tasks):
+            await task
+            completed += 1
+            # File transfer occupies 15..80 percent. Avoid excessive Telegram edits.
+            percent = 15 + round(65 * completed / max(1, total))
+            if progress_message and (percent >= last_percent + 5 or completed == total):
+                last_percent = percent
+                await _safe_edit(
+                    progress_message,
+                    '📤 در حال انتقال فایل رهگیری به سایت…\n'
+                    f'{completed}/{total} بخش\n{_progress_bar(percent)}',
+                )
+    except Exception:
+        # A failed chunk must stop the rest immediately; continuing queued tasks
+        # can turn a temporary WAF limit into a longer block.
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
     if progress_message:
         await _safe_edit(
@@ -150,22 +165,13 @@ async def text(update, ctx):
         )
 
     if value == '📤 آپلود اکسل کد رهگیری':
-        # Fail early if the tracking plugin has not been upgraded yet.
-        try:
-            status = await tracking_status()
-        except Exception as exc:
-            return await update.message.reply_text(
-                '❌ اتصال بخش رهگیری سایت آماده نیست.\n'
-                'نسخه جدید Vesta Smart Post Tracking را روی وردپرس Replace/Activate کنید.\n\n'
-                f'جزئیات: {exc}',
-                reply_markup=site_tracking_menu(),
-            )
+        # Set the route before any network access. Previously a failed preflight
+        # left no state, causing the next spreadsheet to fall into Shopino import.
         ops.set_state(uid, 'site_tracking', 'waiting_file', {})
         return await update.message.reply_text(
             '📤 فایل رهگیری را بفرستید.\n\n'
             'فرمت‌های قابل قبول: XLSX / XLSM / CSV\n'
-            'بعد از دریافت، ربات فایل را در همان جدول افزونه سایت وارد می‌کند و تا جای ممکن به سفارش‌های ووکامرس متصل می‌کند.\n\n'
-            f'رکوردهای فعلی سایت: {status.get("total", 0)}',
+            'بعد از دریافت، ربات فایل را در همان جدول افزونه سایت وارد می‌کند و تا جای ممکن به سفارش‌های ووکامرس متصل می‌کند.',
             reply_markup=ops.cancel_menu(),
         )
 
