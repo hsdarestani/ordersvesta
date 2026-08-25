@@ -190,6 +190,11 @@ function vbb_handle_v2_request() {
     if (!vbb_v2_request()) {
         return;
     }
+    // The tracking plugin extends the same signed transport. It is fully loaded
+    // by this point, so let it claim its operations before the core dispatcher.
+    if (function_exists('vpt_bot_bridge_route')) {
+        vpt_bot_bridge_route();
+    }
     list($op, $payload) = vbb_v2_authorize();
     vbb_dispatch($op, $payload);
     exit;
