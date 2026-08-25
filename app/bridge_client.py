@@ -98,6 +98,10 @@ class BridgeWooClient:
         # Every transport attempt gets a fresh nonce/signature. Chunk writes are
         # offset-based/idempotent, so retrying the same chunk is safe.
         for label, endpoint in (
+            # Admin requests bypass WP Rocket/front-page cache and the theme.
+            # Bridge 1.2.1 handles the signed query during plugins_loaded, before
+            # WordPress reaches the normal admin-ajax dispatcher.
+            ('admin-ajax', f'{self.url}/wp-admin/admin-ajax.php'),
             ('home', f'{self.url}/'),
             ('index', f'{self.url}/index.php'),
         ):
@@ -123,6 +127,7 @@ class BridgeWooClient:
         errors = []
         deadline = time.monotonic() + 15.0
         for label, endpoint in (
+            ('admin-ajax', f'{self.url}/wp-admin/admin-ajax.php'),
             ('home', f'{self.url}/'),
             ('index', f'{self.url}/index.php'),
         ):
