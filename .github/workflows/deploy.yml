@@ -99,3 +99,29 @@ jobs:
             docker compose ps
             docker compose logs --tail=30 bot
             curl -fsS http://127.0.0.1:8094/health
+
+            echo "Bridge network diagnostics (host)"
+            getent ahosts vesta-cosmetics.ir || true
+            curl -4IsS --connect-timeout 12 --max-time 18 \
+              -o /dev/null -w 'host-ipv4 code=%{http_code} remote=%{remote_ip} connect=%{time_connect} tls=%{time_appconnect} total=%{time_total}\n' \
+              https://vesta-cosmetics.ir/ || true
+            curl -6IsS --connect-timeout 6 --max-time 10 \
+              -o /dev/null -w 'host-ipv6 code=%{http_code} remote=%{remote_ip} connect=%{time_connect} tls=%{time_appconnect} total=%{time_total}\n' \
+              https://vesta-cosmetics.ir/ || true
+
+            echo "Bridge network diagnostics (bot container)"
+            docker compose exec -T bot python - <<'PY'
+            import socket, ssl, time
+            host = 'vesta-cosmetics.ir'
+            for family, label in ((socket.AF_INET, 'ipv4'), (socket.AF_INET6, 'ipv6')):
+                started = time.monotonic()
+                try:
+                    rows = socket.getaddrinfo(host, 443, family, socket.SOCK_STREAM)
+                    print(label, 'addresses=', sorted({row[4][0] for row in rows}))
+                    raw = socket.create_connection(rows[0][4], timeout=12)
+                    context = ssl.create_default_context()
+                    with context.wrap_socket(raw, server_hostname=host) as sock:
+                        print(label, 'tls=', sock.version(), 'seconds=', round(time.monotonic() - started, 3))
+                except Exception as exc:
+                    print(label, 'error=', repr(exc), 'seconds=', round(time.monotonic() - started, 3))
+            PY
