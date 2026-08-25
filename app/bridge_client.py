@@ -2,11 +2,14 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import http.client
 import json
 import secrets
+import ssl
 import time
 import zlib
 from pathlib import Path
+from urllib.parse import urlencode, urlsplit
 
 import httpx
 
@@ -55,6 +58,20 @@ def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode().rstrip('=')
 
 
+class _StdlibResponse:
+    def __init__(self, status_code, headers, body):
+        self.status_code = int(status_code)
+        self.headers = headers
+        self._body = body
+
+    @property
+    def text(self):
+        return self._body.decode('utf-8', errors='replace')
+
+    def json(self):
+        return json.loads(self.text)
+
+
 class BridgeWooClient:
     def __init__(self):
         self.url = (ops.cfg_get('url') or '').rstrip('/')
@@ -82,6 +99,40 @@ class BridgeWooClient:
             raise RuntimeError(f'Bridge HTTP {response.status_code}: {detail}')
         data = body.get('data')
         return data if isinstance(data, dict) else {}
+
+    def _stdlib_get(self, endpoint, params, timeout):
+        """Fresh stdlib TLS transport.
+
+        Production diagnostics prove raw Python TLS reaches the Iranian host in
+        ~0.2s while httpx intermittently stalls in its SSL transport. A fresh
+        HTTPSConnection also avoids reusing a poisoned/stale pooled socket after
+        the earlier WAF throttling incident.
+        """
+        target = urlsplit(endpoint)
+        if target.scheme != 'https' or not target.hostname:
+            raise RuntimeError('Bridge URL must use a valid HTTPS address.')
+        path = target.path or '/'
+        query = urlencode(params)
+        if target.query:
+            query = f'{target.query}&{query}'
+        if query:
+            path = f'{path}?{query}'
+
+        connection = http.client.HTTPSConnection(
+            target.hostname,
+            target.port or 443,
+            timeout=max(0.1, float(timeout)),
+            context=ssl.create_default_context(),
+        )
+        try:
+            connection.request('GET', path, headers=BROWSER_HEADERS)
+            raw_response = connection.getresponse()
+            raw_body = raw_response.read()
+            return _StdlibResponse(raw_response.status, raw_response.headers, raw_body)
+        except (TimeoutError, OSError, ssl.SSLError, http.client.HTTPException) as exc:
+            raise httpx.NetworkError(str(exc)) from exc
+        finally:
+            connection.close()
 
     def _signed_params(self, op, payload=None):
         raw = json.dumps(payload or {}, ensure_ascii=False, separators=(',', ':')).encode()
@@ -112,7 +163,7 @@ class BridgeWooClient:
             try:
                 # Reserve time for the fallback endpoint instead of spending the
                 # whole retry budget on the same WordPress rewrite route.
-                r = self.c.get(endpoint, params=params, timeout=min(12.0, remaining))
+                r = self._stdlib_get(endpoint, params, min(12.0, remaining))
                 return self._decode(r)
             except TRANSIENT_ERRORS as exc:
                 errors.append(f'{label}: {exc}')
@@ -137,7 +188,10 @@ class BridgeWooClient:
             params = self._signed_params(op, payload)
             try:
                 response = await asyncio.wait_for(
-                    self.ac.get(endpoint, params=params), timeout=min(12.0, remaining)
+                    asyncio.to_thread(
+                        self._stdlib_get, endpoint, params, min(12.0, remaining)
+                    ),
+                    timeout=min(12.0, remaining),
                 )
                 return self._decode(response)
             except TRANSIENT_ERRORS as exc:

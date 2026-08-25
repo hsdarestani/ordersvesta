@@ -125,3 +125,15 @@ jobs:
                 except Exception as exc:
                     print(label, 'error=', repr(exc), 'seconds=', round(time.monotonic() - started, 3))
             PY
+
+            echo "Signed Bridge probe from production bot"
+            docker compose exec -T bot python - <<'PY'
+            import time
+            from app.bridge_client import BridgeWooClient
+            started = time.monotonic()
+            try:
+                count = BridgeWooClient().probe()
+                print('signed-probe success products=', count, 'seconds=', round(time.monotonic() - started, 3))
+            except Exception as exc:
+                print('signed-probe error=', repr(exc), 'seconds=', round(time.monotonic() - started, 3))
+            PY
