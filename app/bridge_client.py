@@ -96,26 +96,20 @@ class BridgeWooClient:
             ('index', f'{self.url}/index.php'),
         ):
             params = self._signed_params(op, payload)
-            for attempt in range(2):
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                try:
-                    r = self.c.get(endpoint, params=params, timeout=min(10.0, remaining))
-                    # Authentication/configuration failures are never retried.
-                    if r.status_code in (401, 403):
-                        return self._decode(r)
-                    return self._decode(r)
-                except TRANSIENT_ERRORS as exc:
-                    errors.append(f'{label}: {exc}')
-                    if attempt == 0:
-                        time.sleep(0.25)
-                        params = self._signed_params(op, payload)
-                except RuntimeError:
-                    raise
-                except Exception as exc:
-                    errors.append(f'{label}: {exc}')
-                    break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                # Reserve time for the fallback endpoint instead of spending the
+                # whole retry budget on the same WordPress rewrite route.
+                r = self.c.get(endpoint, params=params, timeout=min(7.0, remaining))
+                return self._decode(r)
+            except TRANSIENT_ERRORS as exc:
+                errors.append(f'{label}: {exc}')
+            except RuntimeError:
+                raise
+            except Exception as exc:
+                errors.append(f'{label}: {exc}')
         raise RuntimeError('Signed GET Bridge ناموفق بود: ' + ' | '.join(errors[-2:]))
 
     async def _async_signed_get(self, op, payload=None):
@@ -126,25 +120,21 @@ class BridgeWooClient:
             ('home', f'{self.url}/'),
             ('index', f'{self.url}/index.php'),
         ):
-            for attempt in range(2):
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                params = self._signed_params(op, payload)
-                try:
-                    response = await asyncio.wait_for(self.ac.get(endpoint, params=params), timeout=remaining)
-                    if response.status_code in (401, 403):
-                        return self._decode(response)
-                    return self._decode(response)
-                except TRANSIENT_ERRORS as exc:
-                    errors.append(f'{label}: {exc}')
-                    if attempt == 0:
-                        await asyncio.sleep(0.25)
-                except RuntimeError:
-                    raise
-                except Exception as exc:
-                    errors.append(f'{label}: {exc}')
-                    break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            params = self._signed_params(op, payload)
+            try:
+                response = await asyncio.wait_for(
+                    self.ac.get(endpoint, params=params), timeout=min(7.0, remaining)
+                )
+                return self._decode(response)
+            except TRANSIENT_ERRORS as exc:
+                errors.append(f'{label}: {exc}')
+            except RuntimeError:
+                raise
+            except Exception as exc:
+                errors.append(f'{label}: {exc}')
         raise RuntimeError('Signed GET Bridge ناموفق بود: ' + ' | '.join(errors[-2:]))
 
     async def aclose(self):
