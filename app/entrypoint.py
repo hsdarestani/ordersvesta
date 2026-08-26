@@ -30,18 +30,21 @@ from app import routing_hotfix as rh
 from app import tracking_queue as tq
 # Parser used by the authenticated pull endpoint.
 from app import site_tracking_rows  # noqa: F401
-from app.tracking_pull import TrackingPullHTTP
+# Tracking status wrapper exposes whether WordPress has actually reached the bot.
+from app import tracking_status as tstatus
+# HTTP wrapper records every WordPress pull/ack hit before authentication.
+from app.tracking_telemetry import TrackingPullTelemetryHTTP
 
 # Apply menu / WooCommerce / tracking routers.
 m.start = ops.start
-m.text = tq.text
+m.text = tstatus.text
 m.callback = wopt.callback
 m.photo = pux.photo
 m.document = tq.document
 
 
 def main():
-    health = m.ThreadingHTTPServer(('0.0.0.0', 8080), TrackingPullHTTP)
+    health = m.ThreadingHTTPServer(('0.0.0.0', 8080), TrackingPullTelemetryHTTP)
     threading.Thread(target=health.serve_forever, daemon=True).start()
 
     request = HTTPXRequest(
