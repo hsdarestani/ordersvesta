@@ -1,5 +1,5 @@
 <?php
-// Pull-mode transport for Vesta Smart Post Tracking 2.3.5+.
+// Pull-mode transport for Vesta Smart Post Tracking 2.3.6+.
 // WordPress pulls queued tracking jobs from the bot. Import is resumable and
 // processed in tiny batches through a lightweight front endpoint (not admin-ajax).
 
@@ -28,7 +28,7 @@ function vpt_pull_direct_get($url, $timeout = 12) {
             CURLOPT_HTTPHEADER => array(
                 'Accept: application/json',
                 'Cache-Control: no-cache',
-                'User-Agent: VestaPostTrackingPull/2.3.5',
+                'User-Agent: VestaPostTrackingPull/2.3.6',
             ),
         ));
         $body = curl_exec($ch);
@@ -232,9 +232,10 @@ function vpt_pull_fast_match($payload) {
     return Vesta_Smart_Post_Tracking::match_failure('کاندیدای مطمئن برای اتصال پیدا نشد.');
 }
 
-function vpt_pull_import_fast_batch($rows, $filename) {
+function vpt_pull_import_raw_batch($rows, $filename) {
     $stats = array('inserted' => 0, 'updated' => 0, 'skipped' => 0, 'linked' => 0, 'unlinked' => 0);
     if (!is_array($rows) || count($rows) < 2) return $stats;
+
     $headers = array_map(array('Vesta_Smart_Post_Tracking', 'normalize_header'), $rows[0]);
     global $wpdb;
     $table = Vesta_Smart_Post_Tracking::table_name();
@@ -249,19 +250,90 @@ function vpt_pull_import_fast_batch($rows, $filename) {
             continue;
         }
 
-        $existing_order_id = (int) $wpdb->get_var($wpdb->prepare("SELECT order_id FROM {$table} WHERE tracking_code=%s LIMIT 1", $payload['tracking_code']));
-        if ($existing_order_id && function_exists('wc_get_order')) {
-            $existing_order = wc_get_order($existing_order_id);
-            if ($existing_order) {
-                $payload['order_id'] = $existing_order_id;
-                $payload['match_method'] = 'existing_tracking';
-                $payload['match_status'] = 'linked';
-                $payload['match_reason'] = 'اتصال قبلی این کد رهگیری حفظ شد.';
-                Vesta_Smart_Post_Tracking::enrich_from_order($payload, $existing_order);
-            }
+        // Upload must stay fast. Preserve an existing Woo link, but do not load
+        // Woo orders or run fuzzy matching in the request that imports the file.
+        $existing_order_id = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT order_id FROM {$table} WHERE tracking_code=%s LIMIT 1",
+            $payload['tracking_code']
+        ));
+        if ($existing_order_id > 0) {
+            $payload['order_id'] = $existing_order_id;
+            $payload['match_status'] = 'linked';
+            $payload['match_method'] = 'existing_tracking';
+            $payload['match_reason'] = 'اتصال قبلی این کد رهگیری حفظ شد.';
+        } else {
+            $payload['match_status'] = 'pending';
+            $payload['match_method'] = 'background';
+            $payload['match_reason'] = 'ثبت شد؛ تطبیق سفارش در پس‌زمینه انجام می‌شود.';
         }
 
-        if (empty($payload['order_id'])) {
+        $status = Vesta_Smart_Post_Tracking::upsert_record($payload, $filename);
+        if ($status === 'inserted') $stats['inserted']++;
+        elseif ($status === 'updated') $stats['updated']++;
+        if ($existing_order_id > 0) $stats['linked']++;
+        else $stats['unlinked']++;
+    }
+    return $stats;
+}
+
+function vpt_pull_match_state_get() {
+    $state = json_decode((string) get_option('vpt_pull_match_job', ''), true);
+    return is_array($state) ? $state : null;
+}
+
+function vpt_pull_match_state_set($state) {
+    update_option('vpt_pull_match_job', wp_json_encode($state, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), false);
+}
+
+function vpt_pull_match_state_clear() {
+    delete_option('vpt_pull_match_job');
+}
+
+function vpt_pull_queue_background_match($state) {
+    if (!is_array($state) || empty($state['rows']) || empty($state['header'])) return;
+    vpt_pull_match_state_set(array(
+        'job_id' => (string) ($state['job_id'] ?? ''),
+        'filename' => (string) ($state['filename'] ?? 'tracking.xlsx'),
+        'header' => $state['header'],
+        'rows' => array_values($state['rows']),
+        'cursor' => 0,
+        'total' => count($state['rows']),
+        'started_at' => current_time('mysql'),
+    ));
+}
+
+function vpt_pull_match_step($batch_size = 1) {
+    if (get_transient('vpt_pull_match_lock')) return;
+    set_transient('vpt_pull_match_lock', 1, 25);
+    @set_time_limit(25);
+    try {
+        $state = vpt_pull_match_state_get();
+        if (!is_array($state) || empty($state['rows']) || empty($state['header'])) {
+            vpt_pull_match_state_clear();
+            return;
+        }
+        $cursor = max(0, (int) ($state['cursor'] ?? 0));
+        $total = max(0, (int) ($state['total'] ?? count($state['rows'])));
+        if ($cursor >= $total) {
+            vpt_pull_match_state_clear();
+            return;
+        }
+        global $wpdb;
+        $table = Vesta_Smart_Post_Tracking::table_name();
+        $headers = array_map(array('Vesta_Smart_Post_Tracking', 'normalize_header'), $state['header']);
+        $limit = min($total, $cursor + max(1, (int) $batch_size));
+        for ($i = $cursor; $i < $limit; $i++) {
+            $row = $state['rows'][$i] ?? array();
+            if (!is_array($row) || Vesta_Smart_Post_Tracking::row_is_empty($row)) continue;
+            $assoc = Vesta_Smart_Post_Tracking::map_row($headers, $row);
+            $payload = Vesta_Smart_Post_Tracking::payload_from_assoc($assoc);
+            if (empty($payload['tracking_code'])) continue;
+            $existing_order_id = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT order_id FROM {$table} WHERE tracking_code=%s LIMIT 1",
+                $payload['tracking_code']
+            ));
+            if ($existing_order_id > 0) continue;
+
             $match = vpt_pull_fast_match($payload);
             if (!empty($match['order_id']) && !empty($match['order'])) {
                 Vesta_Smart_Post_Tracking::apply_match_success($payload, $match);
@@ -270,23 +342,25 @@ function vpt_pull_import_fast_batch($rows, $filename) {
             } else {
                 Vesta_Smart_Post_Tracking::apply_match_failure($payload, $match);
             }
+            Vesta_Smart_Post_Tracking::upsert_record($payload, (string) ($state['filename'] ?? 'tracking.xlsx'));
         }
-
-        $status = Vesta_Smart_Post_Tracking::upsert_record($payload, $filename);
-        if ($status === 'inserted') $stats['inserted']++;
-        elseif ($status === 'updated') $stats['updated']++;
-        if (!empty($payload['order_id'])) $stats['linked']++;
-        else $stats['unlinked']++;
+        $state['cursor'] = $limit;
+        $state['updated_at'] = current_time('mysql');
+        if ($limit >= $total) vpt_pull_match_state_clear();
+        else vpt_pull_match_state_set($state);
+    } catch (Throwable $e) {
+        update_option('vpt_pull_match_last_error', current_time('mysql') . ' | ' . $e->getMessage(), false);
+    } finally {
+        delete_transient('vpt_pull_match_lock');
     }
-    return $stats;
 }
 
-function vpt_pull_step($batch_size = 8) {
+function vpt_pull_step($batch_size = 40) {
     if (get_transient('vpt_pull_step_lock')) {
         return array('ok' => true, 'state' => 'busy', 'active' => true, 'progress' => vpt_pull_progress_data());
     }
-    set_transient('vpt_pull_step_lock', 1, 20);
-    @set_time_limit(25);
+    set_transient('vpt_pull_step_lock', 1, 15);
+    @set_time_limit(20);
 
     try {
         $state = vpt_pull_state_get();
@@ -302,7 +376,7 @@ function vpt_pull_step($batch_size = 8) {
 
         if ($cursor < $total) {
             $slice = array_slice($rows, $cursor, max(1, (int) $batch_size));
-            $stats = vpt_pull_import_fast_batch(array_merge(array($header), $slice), $filename);
+            $stats = vpt_pull_import_raw_batch(array_merge(array($header), $slice), $filename);
             $totals = isset($state['totals']) && is_array($state['totals']) ? $state['totals'] : array();
             foreach (array('inserted', 'updated', 'skipped', 'linked', 'unlinked') as $key) {
                 $totals[$key] = (int) ($totals[$key] ?? 0) + (int) ($stats[$key] ?? 0);
@@ -313,19 +387,35 @@ function vpt_pull_step($batch_size = 8) {
             vpt_pull_state_set($state);
             update_option('vpt_pull_last_state', 'running', false);
             $pct = 8 + (int) floor(84 * $cursor / max(1, $total));
-            $progress = vpt_pull_progress('importing', min(92, $pct), 'در حال ثبت و تطبیق سریع رهگیری‌ها…', $cursor, $total);
+            $progress = vpt_pull_progress(
+                'importing', min(92, $pct),
+                'در حال ثبت سریع کدهای رهگیری… تطبیق سفارش‌ها جداگانه در پس‌زمینه انجام می‌شود.',
+                $cursor, $total
+            );
             return array('ok' => true, 'state' => 'importing', 'active' => true, 'progress' => $progress);
         }
 
         $status = function_exists('vpt_bot_status_data') ? vpt_bot_status_data() : array();
-        $result = array_merge(array('filename' => $filename, 'rows' => $total), $state['totals'] ?? array(), is_array($status) ? $status : array());
-        vpt_pull_progress('acknowledging', 96, 'ثبت انجام شد؛ در حال تأیید نتیجه به ربات…', $total, $total);
+        $result = array_merge(
+            array('filename' => $filename, 'rows' => $total, 'matching' => 'background'),
+            $state['totals'] ?? array(),
+            is_array($status) ? $status : array()
+        );
+        vpt_pull_progress('acknowledging', 96, 'همه کدها ثبت شدند؛ در حال تأیید نتیجه به ربات…', $total, $total);
         vpt_pull_ack($job_id, $result);
-        update_option('vpt_pull_last_success', wp_json_encode(array('time' => current_time('mysql'), 'job' => $job_id, 'result' => $result), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), false);
+        update_option('vpt_pull_last_success', wp_json_encode(
+            array('time' => current_time('mysql'), 'job' => $job_id, 'result' => $result),
+            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+        ), false);
         delete_option('vpt_pull_last_error');
         update_option('vpt_pull_last_state', 'success', false);
+        vpt_pull_queue_background_match($state);
         vpt_pull_state_clear();
-        $progress = vpt_pull_progress('success', 100, 'ثبت فایل با موفقیت کامل شد.', $total, $total);
+        $progress = vpt_pull_progress(
+            'success', 100,
+            '✅ همه کدهای رهگیری ثبت شدند. تطبیق هوشمند سفارش‌ها در پس‌زمینه ادامه دارد.',
+            $total, $total
+        );
         return array('ok' => true, 'state' => 'success', 'active' => false, 'result' => $result, 'progress' => $progress);
     } catch (Throwable $e) {
         update_option('vpt_pull_last_error', current_time('mysql') . ' | ' . $e->getMessage(), false);
@@ -364,20 +454,28 @@ add_action('template_redirect', function () {
         $result = vpt_pull_begin();
         wp_send_json_success(array('begin' => $result, 'progress' => vpt_pull_progress_data(), 'active' => (bool) vpt_pull_state_get()));
     }
-    if ($op === 'step') wp_send_json_success(vpt_pull_step(8));
+    if ($op === 'step') wp_send_json_success(vpt_pull_step(40));
     if ($op === 'status') wp_send_json_success(vpt_pull_status_payload());
     wp_send_json_error(array('message' => 'Unknown operation.'), 400);
 }, -100);
 
 function vpt_pull_cron_tick() {
-    if (!vpt_pull_state_get()) {
-        $begin = vpt_pull_begin();
-        if (empty($begin['active'])) return;
+    if (vpt_pull_state_get()) {
+        // Raw table import stays cheap; one 40-row batch is safe for cron.
+        vpt_pull_step(40);
+        return;
     }
-    vpt_pull_step(5);
+    if (vpt_pull_match_state_get()) {
+        // Smart Woo matching is intentionally throttled so it can never block
+        // normal website/admin traffic.
+        vpt_pull_match_step(1);
+        return;
+    }
+    $begin = vpt_pull_begin();
+    if (!empty($begin['active'])) vpt_pull_step(40);
 }
 
-add_filter('cron_schedules', function ($schedules) {
+add_filter('cron_schedules' , function ($schedules) {
     if (!isset($schedules['vpt_every_minute'])) $schedules['vpt_every_minute'] = array('interval' => 60, 'display' => 'Vesta every minute');
     return $schedules;
 });
@@ -404,7 +502,7 @@ function vpt_pull_diagnostics_page() {
     ?>
     <div class="wrap">
         <h1>Vesta Tracking Pull</h1>
-        <p><strong>نسخه مسیر Pull: 2.3.5</strong></p>
+        <p><strong>نسخه مسیر Pull: 2.3.6</strong></p>
         <table class="widefat striped" style="max-width:980px"><tbody>
             <tr><td style="width:220px"><strong>Bot endpoint</strong></td><td><code><?php echo esc_html(vpt_pull_base_url()); ?></code></td></tr>
             <tr><td><strong>Bridge token</strong></td><td><?php echo $token !== '' ? '✅ موجود (hash: <code>' . esc_html(substr(hash('sha256', $token), 0, 10)) . '</code>)' : '❌ پیدا نشد'; ?></td></tr>
@@ -413,7 +511,7 @@ function vpt_pull_diagnostics_page() {
             <tr><td><strong>اجرای بعدی Cron</strong></td><td><?php echo $next ? esc_html(wp_date('Y-m-d H:i:s', $next)) : '❌ زمان‌بندی نشده'; ?></td></tr>
             <tr><td><strong>آخرین خطا</strong></td><td><code id="vpt-last-error"><?php echo esc_html($last_error ?: '—'); ?></code></td></tr>
         </tbody></table>
-        <p style="margin-top:18px">این نسخه admin-ajax را کنار گذاشته و هر درخواست فقط ۸ ردیف را با تطبیق سریع پردازش می‌کند.</p>
+        <p style="margin-top:18px">این نسخه ثبت فایل را از تطبیق سنگین سفارش‌ها جدا کرده است؛ هر درخواست ۴۰ ردیف را سریع داخل جدول ثبت می‌کند و تطبیق سفارش‌ها بعداً در پس‌زمینه ادامه پیدا می‌کند.</p>
         <button id="vpt-pull-now" class="button button-primary button-hero">🔄 دریافت / ادامه ثبت فایل</button>
         <div style="max-width:980px;margin-top:18px;background:#fff;border:1px solid #ccd0d4;border-radius:8px;padding:14px">
             <div style="display:flex;justify-content:space-between"><strong id="vpt-progress-message"><?php echo esc_html($initial['message'] ?? 'آماده'); ?></strong><span id="vpt-progress-percent"><?php echo (int) ($initial['percent'] ?? 0); ?>%</span></div>
