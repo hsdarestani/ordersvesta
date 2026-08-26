@@ -27,14 +27,17 @@ st.ORIG_TEXT = wopt.text
 # Final production routing fixes: strict Shopino/site isolation, instant product
 # wizard start, and Bridge relay -> direct-origin fallback.
 from app import routing_hotfix as rh
+# Durable queue is the outermost tracking router. Website tracking files are
+# persisted locally first and retried in the background until WordPress responds.
+from app import tracking_queue as tq
 from app.public_media import BridgeHTTP
 
 # Apply menu / WooCommerce / tracking routers.
 m.start = ops.start
-m.text = rh.text
+m.text = tq.text
 m.callback = wopt.callback
 m.photo = pux.photo
-m.document = rh.document
+m.document = tq.document
 
 
 def main():
@@ -64,6 +67,7 @@ def main():
         .request(request)
         .get_updates_request(updates_request)
         .concurrent_updates(8)
+        .post_init(tq.startup)
         .build()
     )
     a.add_handler(CommandHandler('start', m.start))
