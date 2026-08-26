@@ -84,10 +84,18 @@ class BridgeWooClient:
         self.ac = _ASYNC_CLIENT
 
     def _bridge_endpoints(self):
-        if self.bridge_url != self.url:
+        # Resolve lazily as well as in __init__. This keeps requests safe when a
+        # long-lived/cached instance was created before BRIDGE_RELAY_URL support
+        # was deployed and therefore has no bridge_url attribute yet.
+        bridge_url = getattr(
+            self,
+            'bridge_url',
+            (os.getenv('BRIDGE_RELAY_URL') or self.url).rstrip('/'),
+        )
+        if bridge_url != self.url:
             # The Worker always forwards to the origin Bridge root. A single
             # attempt avoids sending the same signed operation three times.
-            return (('cloudflare-relay', f'{self.bridge_url}/'),)
+            return (('cloudflare-relay', f'{bridge_url}/'),)
         return (
             ('admin-ajax', f'{self.url}/wp-admin/admin-ajax.php'),
             ('home', f'{self.url}/'),
