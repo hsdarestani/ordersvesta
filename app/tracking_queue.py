@@ -38,8 +38,9 @@ with m.db() as c:
     cols = {row['name'] for row in c.execute('PRAGMA table_info(site_tracking_jobs)').fetchall()}
     if 'notified' not in cols:
         c.execute('ALTER TABLE site_tracking_jobs ADD COLUMN notified INTEGER NOT NULL DEFAULT 0')
-    # Old push-mode jobs must become available to the new site-pull worker.
-    c.execute("UPDATE site_tracking_jobs SET status='pending',next_retry=0 WHERE status IN ('processing','retry')")
+    # Old push-mode jobs and stale leases must be immediately available to the
+    # pull-only worker after a deploy/restart. Imports are idempotent/upsert based.
+    c.execute("UPDATE site_tracking_jobs SET status='pending',next_retry=0 WHERE status IN ('processing','retry','leased')")
 
 _WORKER_TASK = None
 
@@ -82,22 +83,21 @@ def latest_result():
         return {}
 
 
-def claim_for_site(lease_seconds=180):
+def claim_for_site(lease_seconds=45):
     """Lease one queued website-tracking file to WordPress.
 
-    WordPress pulls from the bot, so the unreliable bot -> Iran-host path is no
-    longer used at all. Expired leases can be claimed again safely because the
-    tracking plugin upserts by tracking code.
+    The WordPress side is the only consumer and imports are idempotent/upsert
+    based, so a previously leased job is intentionally reclaimable immediately.
+    This prevents a dropped ACK or interrupted PHP request from hiding a queued
+    file for minutes and making manual diagnostics falsely report an empty queue.
     """
     now = time.time()
     with m.db() as c:
         c.execute('BEGIN IMMEDIATE')
         row = c.execute(
             '''SELECT * FROM site_tracking_jobs
-               WHERE status IN ('pending','retry')
-                  OR (status='leased' AND next_retry<=?)
-               ORDER BY created_at ASC LIMIT 1''',
-            (now,),
+               WHERE status IN ('pending','retry','leased')
+               ORDER BY created_at ASC LIMIT 1'''
         ).fetchone()
         if not row:
             c.commit()
