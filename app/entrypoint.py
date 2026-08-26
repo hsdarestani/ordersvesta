@@ -30,6 +30,10 @@ from app import routing_hotfix as rh
 # Durable queue is the outermost tracking router. Website tracking files are
 # persisted locally first and retried in the background until WordPress responds.
 from app import tracking_queue as tq
+# Compact row transport patches site_tracking.upload_tracking_file so queued
+# spreadsheets are parsed locally and sent in a few small idempotent batches
+# instead of dozens of binary GET chunks that trigger the shop WAF.
+from app import site_tracking_rows  # noqa: F401
 from app.public_media import BridgeHTTP
 
 # Apply menu / WooCommerce / tracking routers.
