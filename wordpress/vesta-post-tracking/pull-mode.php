@@ -30,7 +30,7 @@ function vpt_pull_direct_get($url, $timeout = 12) {
             CURLOPT_HTTPHEADER => array(
                 'Accept: application/json',
                 'Cache-Control: no-cache',
-                'User-Agent: VestaPostTrackingPull/2.3',
+                'User-Agent: VestaPostTrackingPull/2.3.1',
             ),
         ));
         $body = curl_exec($ch);
@@ -112,6 +112,7 @@ function vpt_pull_run() {
         return;
     }
     set_transient('vpt_pull_lock', 1, 50);
+    update_option('vpt_pull_last_attempt', current_time('mysql'), false);
     try {
         $job = vpt_pull_fetch_job();
         if (!$job) {
@@ -164,8 +165,34 @@ add_filter('cron_schedules', function ($schedules) {
 });
 
 add_action('vpt_bot_pull_cron', 'vpt_pull_run');
+
+// Always make sure the recurring job exists. Schedule it immediately instead of
+// five seconds in the future so the next cron spawn can execute it at once.
 add_action('init', function () {
     if (!wp_next_scheduled('vpt_bot_pull_cron')) {
-        wp_schedule_event(time() + 5, 'vpt_every_minute', 'vpt_bot_pull_cron');
+        wp_schedule_event(time(), 'vpt_every_minute', 'vpt_bot_pull_cron');
     }
-});
+
+    // Proactively ask WordPress to spawn due cron events. This fixes hosts where
+    // the scheduled event exists but waits indefinitely for a later page request.
+    if (!get_transient('vpt_pull_cron_spawn_guard')) {
+        set_transient('vpt_pull_cron_spawn_guard', 1, 30);
+        if (function_exists('spawn_cron') && (!defined('DISABLE_WP_CRON') || !DISABLE_WP_CRON)) {
+            spawn_cron(time());
+        }
+    }
+}, 20);
+
+// When an administrator is in wp-admin, run one direct pull at most once every
+// 30 seconds. This makes plugin upgrades/visits process queued files immediately
+// even when WP-Cron is disabled or loopback cron spawning is unreliable.
+add_action('admin_init', function () {
+    if (wp_doing_ajax() || !current_user_can('manage_woocommerce')) {
+        return;
+    }
+    if (get_transient('vpt_pull_admin_guard')) {
+        return;
+    }
+    set_transient('vpt_pull_admin_guard', 1, 30);
+    vpt_pull_run();
+}, 20);
