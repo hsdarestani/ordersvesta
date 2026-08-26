@@ -20,17 +20,21 @@ from app import performance  # noqa: F401
 from app import weight_optional as wopt
 # Site-tracking wrapper adds direct spreadsheet import into the site's tracking table.
 from app import site_tracking as st
-from app.public_media import BridgeHTTP
 
 # Preserve the optional-weight flow under the site-tracking text router.
 st.ORIG_TEXT = wopt.text
 
-# Apply menu / WooCommerce / site-tracking routers.
+# Final production routing fixes: strict Shopino/site isolation, instant product
+# wizard start, and Bridge relay -> direct-origin fallback.
+from app import routing_hotfix as rh
+from app.public_media import BridgeHTTP
+
+# Apply menu / WooCommerce / tracking routers.
 m.start = ops.start
-m.text = st.text
+m.text = rh.text
 m.callback = wopt.callback
 m.photo = pux.photo
-m.document = st.document
+m.document = rh.document
 
 
 def main():
