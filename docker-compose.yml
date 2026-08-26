@@ -8,6 +8,7 @@ services:
       SHOP_ID: "7944"
       DATA_DIR: /app/data
       PUBLIC_BASE_URL: "https://ordersvesta.smarbiz.sbs"
+      BRIDGE_RELAY_URL: "https://vesta-bridge-relay.hsdf7rb.workers.dev"
     volumes:
       - ordersvesta_data:/app/data
       - ./public_media:/app/data/bridge_media

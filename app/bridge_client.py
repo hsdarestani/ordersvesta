@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import http.client
 import json
+import os
 import secrets
 import ssl
 import time
@@ -75,11 +76,23 @@ class _StdlibResponse:
 class BridgeWooClient:
     def __init__(self):
         self.url = (ops.cfg_get('url') or '').rstrip('/')
+        self.bridge_url = (os.getenv('BRIDGE_RELAY_URL') or self.url).rstrip('/')
         self.token = ops.cfg_get('bridge_token') or ''
         if not self.url or not self.token:
             raise RuntimeError('Bridge ووکامرس تنظیم نشده است. از «🔌 اتصال ووکامرس» استفاده کنید.')
         self.c = _SYNC_CLIENT
         self.ac = _ASYNC_CLIENT
+
+    def _bridge_endpoints(self):
+        if self.bridge_url != self.url:
+            # The Worker always forwards to the origin Bridge root. A single
+            # attempt avoids sending the same signed operation three times.
+            return (('cloudflare-relay', f'{self.bridge_url}/'),)
+        return (
+            ('admin-ajax', f'{self.url}/wp-admin/admin-ajax.php'),
+            ('home', f'{self.url}/'),
+            ('index', f'{self.url}/index.php'),
+        )
 
     def _decode(self, response):
         ctype = (response.headers.get('content-type') or '').lower()
@@ -148,14 +161,7 @@ class BridgeWooClient:
         deadline = time.monotonic() + 15.0
         # Every transport attempt gets a fresh nonce/signature. Chunk writes are
         # offset-based/idempotent, so retrying the same chunk is safe.
-        for label, endpoint in (
-            # Admin requests bypass WP Rocket/front-page cache and the theme.
-            # Bridge 1.2.1 handles the signed query during plugins_loaded, before
-            # WordPress reaches the normal admin-ajax dispatcher.
-            ('admin-ajax', f'{self.url}/wp-admin/admin-ajax.php'),
-            ('home', f'{self.url}/'),
-            ('index', f'{self.url}/index.php'),
-        ):
+        for label, endpoint in self._bridge_endpoints():
             params = self._signed_params(op, payload)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -177,11 +183,7 @@ class BridgeWooClient:
         """Async Bridge transport for handlers; all retries share a 15-second budget."""
         errors = []
         deadline = time.monotonic() + 15.0
-        for label, endpoint in (
-            ('admin-ajax', f'{self.url}/wp-admin/admin-ajax.php'),
-            ('home', f'{self.url}/'),
-            ('index', f'{self.url}/index.php'),
-        ):
+        for label, endpoint in self._bridge_endpoints():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
