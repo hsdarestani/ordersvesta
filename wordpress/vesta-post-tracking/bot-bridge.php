@@ -3,8 +3,9 @@
 // Vesta Telegram Bot integration
 // -----------------------------------------------------------------------------
 // Reuses the HMAC authentication from the separate Vesta Bot Bridge plugin.
-// The spreadsheet is transferred in small signed GET chunks because this host's
-// WAF blocks normal authenticated POST uploads. No extra token is required.
+// Legacy binary chunk upload remains supported, but the preferred bot transport
+// sends compact spreadsheet rows in a few idempotent signed batches. This avoids
+// dozens of WAF-sensitive file-chunk requests.
 
 function vpt_bot_tmp_dir() {
     $uploads = wp_upload_dir();
@@ -33,6 +34,10 @@ function vpt_bot_meta_key($id) {
 
 function vpt_bot_result_key($id) {
     return 'vpt_bot_result_' . $id;
+}
+
+function vpt_bot_rows_result_key($import_id, $batch_index) {
+    return 'vpt_rows_' . $import_id . '_' . intval($batch_index);
 }
 
 function vpt_bot_b64decode($value) {
@@ -205,12 +210,68 @@ function vpt_bot_finish($payload) {
     return $result;
 }
 
+function vpt_bot_import_rows_batch($payload) {
+    $import_id = isset($payload['import_id']) ? strtolower((string) $payload['import_id']) : '';
+    $batch_index = isset($payload['batch_index']) ? intval($payload['batch_index']) : -1;
+    $filename = sanitize_file_name(isset($payload['filename']) ? $payload['filename'] : 'tracking.xlsx');
+    $rows = isset($payload['rows']) && is_array($payload['rows']) ? $payload['rows'] : array();
+    if (!preg_match('/^[a-f0-9]{32}$/', $import_id) || $batch_index < 0) {
+        vbb_fail('Invalid tracking row-batch id.', 400);
+    }
+    if (count($rows) < 2 || count($rows) > 101) {
+        vbb_fail('Tracking row batch must contain a header and 1..100 rows.', 400);
+    }
+
+    $cache_key = vpt_bot_rows_result_key($import_id, $batch_index);
+    $existing = get_transient($cache_key);
+    if (is_array($existing)) {
+        return $existing;
+    }
+
+    // Normalize every cell to a scalar string. The main plugin still owns all
+    // header mapping, Woo matching and DB upsert logic.
+    $clean_rows = array();
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            vbb_fail('Invalid tracking row batch.', 400);
+        }
+        $clean = array();
+        foreach ($row as $cell) {
+            if (is_scalar($cell) || $cell === null) {
+                $clean[] = trim((string) $cell);
+            } else {
+                $clean[] = '';
+            }
+        }
+        $clean_rows[] = $clean;
+    }
+
+    $opts = Vesta_Smart_Post_Tracking::options();
+    $auto_match = array_key_exists('auto_match', $payload)
+        ? !empty($payload['auto_match'])
+        : (($opts['auto_match_on_import'] ?? 'yes') === 'yes');
+
+    $stats = Vesta_Smart_Post_Tracking::import_rows($clean_rows, $filename, $auto_match);
+    $status = vpt_bot_status_data();
+    $result = array_merge(array(
+        'filename' => $filename,
+        'rows' => max(0, count($clean_rows) - 1),
+        'batch_index' => $batch_index,
+        'auto_match' => $auto_match,
+    ), $stats, $status);
+
+    // Makes a timeout/retry safe: the same batch will not be imported twice and
+    // the bot receives the original statistics when it retries.
+    set_transient($cache_key, $result, 2 * HOUR_IN_SECONDS);
+    return $result;
+}
+
 function vpt_bot_bridge_route() {
     if (!function_exists('vbb_v2_request') || !function_exists('vbb_v2_authorize') || !vbb_v2_request()) {
         return;
     }
     $raw_op = isset($_GET['o']) ? sanitize_key(wp_unslash($_GET['o'])) : '';
-    $ops = array('vpt_status', 'vpt_import_begin', 'vpt_import_chunk', 'vpt_import_finish');
+    $ops = array('vpt_status', 'vpt_import_begin', 'vpt_import_chunk', 'vpt_import_finish', 'vpt_import_rows_batch');
     if (!in_array($raw_op, $ops, true)) {
         return;
     }
@@ -223,6 +284,8 @@ function vpt_bot_bridge_route() {
             $result = vpt_bot_begin($payload);
         } elseif ($op === 'vpt_import_chunk') {
             $result = vpt_bot_chunk($payload);
+        } elseif ($op === 'vpt_import_rows_batch') {
+            $result = vpt_bot_import_rows_batch($payload);
         } else {
             $result = vpt_bot_finish($payload);
         }
