@@ -24,17 +24,13 @@ from app import site_tracking as st
 # Preserve the optional-weight flow under the site-tracking text router.
 st.ORIG_TEXT = wopt.text
 
-# Final production routing fixes: strict Shopino/site isolation, instant product
-# wizard start, and Bridge relay -> direct-origin fallback.
+# Final production routing fixes: strict Shopino/site isolation and instant product wizard start.
 from app import routing_hotfix as rh
-# Durable queue is the outermost tracking router. Website tracking files are
-# persisted locally first and retried in the background until WordPress responds.
+# Durable queue stores website-tracking files locally until the WordPress site pulls them.
 from app import tracking_queue as tq
-# Compact row transport patches site_tracking.upload_tracking_file so queued
-# spreadsheets are parsed locally and sent in a few small idempotent batches
-# instead of dozens of binary GET chunks that trigger the shop WAF.
+# Parser used by the authenticated pull endpoint.
 from app import site_tracking_rows  # noqa: F401
-from app.public_media import BridgeHTTP
+from app.tracking_pull import TrackingPullHTTP
 
 # Apply menu / WooCommerce / tracking routers.
 m.start = ops.start
@@ -45,11 +41,9 @@ m.document = tq.document
 
 
 def main():
-    health = m.ThreadingHTTPServer(('0.0.0.0', 8080), BridgeHTTP)
+    health = m.ThreadingHTTPServer(('0.0.0.0', 8080), TrackingPullHTTP)
     threading.Thread(target=health.serve_forever, daemon=True).start()
 
-    # A larger persistent Telegram connection pool plus concurrent update processing
-    # prevents a slow image/API request from blocking unrelated button presses/messages.
     request = HTTPXRequest(
         connection_pool_size=32,
         connect_timeout=10.0,
