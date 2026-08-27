@@ -28,6 +28,8 @@ st.ORIG_TEXT = wopt.text
 from app import routing_hotfix as rh
 # Durable queue stores website-tracking files locally until the WordPress site pulls them.
 from app import tracking_queue as tq
+# Immediate wake worker removes the WP-Cron wait after a tracking file is queued.
+from app import tracking_wake as twake
 # Parser used by the authenticated pull endpoint.
 from app import site_tracking_rows  # noqa: F401
 # Tracking status wrapper exposes whether WordPress has actually reached the bot.
@@ -68,7 +70,7 @@ def main():
         .request(request)
         .get_updates_request(updates_request)
         .concurrent_updates(8)
-        .post_init(tq.startup)
+        .post_init(twake.startup)
         .build()
     )
     a.add_handler(CommandHandler('start', m.start))
