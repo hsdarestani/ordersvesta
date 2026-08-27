@@ -130,7 +130,7 @@ function vpt_bot_chunk($payload) {
         vbb_fail('Invalid tracking file chunk.', 400);
     }
     if ($offset + strlen($bytes) > intval($meta['size'])) {
-        vbb_fail('Tracking file chunk exceeds declared size.', 400);
+        vbb_fail('Tracking file chunk exceeds declared size.', 409);
     }
 
     $path = vpt_bot_path($id);
@@ -266,12 +266,43 @@ function vpt_bot_import_rows_batch($payload) {
     return $result;
 }
 
+function vpt_bot_wake($payload = array()) {
+    // This operation is intentionally tiny and is safe to call repeatedly from
+    // the bot. It never carries spreadsheet data. The site still pulls the file
+    // from the bot; this only removes the unreliable WP-Cron waiting period.
+    $begin = null;
+    $step = null;
+
+    if (function_exists('vpt_pull_state_get') && !vpt_pull_state_get() && function_exists('vpt_pull_begin')) {
+        $begin = vpt_pull_begin();
+    }
+
+    if (function_exists('vpt_pull_state_get') && vpt_pull_state_get() && function_exists('vpt_pull_step')) {
+        // Raw table writes are cheap in 2.3.6+, so one wake can safely advance
+        // a larger batch while still keeping the HTTP request short.
+        $step = vpt_pull_step(80);
+    } elseif (function_exists('vpt_pull_match_state_get') && vpt_pull_match_state_get() && function_exists('vpt_pull_match_step')) {
+        // Background Woo matching is much heavier. Advance only one item per
+        // wake so normal storefront/admin traffic is never blocked.
+        vpt_pull_match_step(1);
+        $step = array('state' => 'matching');
+    }
+
+    return array(
+        'woken' => true,
+        'begin' => $begin,
+        'step' => $step,
+        'active' => function_exists('vpt_pull_state_get') ? (bool) vpt_pull_state_get() : false,
+        'matching_active' => function_exists('vpt_pull_match_state_get') ? (bool) vpt_pull_match_state_get() : false,
+    );
+}
+
 function vpt_bot_bridge_route() {
     if (!function_exists('vbb_v2_request') || !function_exists('vbb_v2_authorize') || !vbb_v2_request()) {
         return;
     }
     $raw_op = isset($_GET['o']) ? sanitize_key(wp_unslash($_GET['o'])) : '';
-    $ops = array('vpt_status', 'vpt_import_begin', 'vpt_import_chunk', 'vpt_import_finish', 'vpt_import_rows_batch');
+    $ops = array('vpt_status', 'vpt_import_begin', 'vpt_import_chunk', 'vpt_import_finish', 'vpt_import_rows_batch', 'vpt_wake');
     if (!in_array($raw_op, $ops, true)) {
         return;
     }
@@ -286,6 +317,8 @@ function vpt_bot_bridge_route() {
             $result = vpt_bot_chunk($payload);
         } elseif ($op === 'vpt_import_rows_batch') {
             $result = vpt_bot_import_rows_batch($payload);
+        } elseif ($op === 'vpt_wake') {
+            $result = vpt_bot_wake($payload);
         } else {
             $result = vpt_bot_finish($payload);
         }
