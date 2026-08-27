@@ -64,7 +64,7 @@ async def text(update, ctx):
         f'خطای فایل محلی: {failed}\n'
         f'{hit_line}\n'
         f'{extra}\n'
-        'حالت انتقال: WordPress Pull 2.3.2\n'
-        'اگر «آخرین تماس» روی ❌ بماند، مشکل خروجی هاست/اجرای افزونه است؛ اگر زمان تماس نمایش داده شود ولی صف کم نشود، مشکل احراز هویت یا Import است.',
+        'حالت انتقال: Immediate Wake + WordPress Pull 2.3.7\n'
+        'بعد از آپلود، ربات سایت را همان لحظه بیدار می‌کند؛ WP-Cron فقط حالت پشتیبان است.',
         reply_markup=st.site_tracking_menu(),
     )
