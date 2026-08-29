@@ -1,0 +1,24 @@
+name: Vesta Server Diagnostic
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/server-diagnostic.yml'
+  workflow_dispatch:
+
+jobs:
+  identify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect Vesta host
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.HOST }}
+          username: root
+          password: ${{ secrets.PASS }}
+          command_timeout: 2m
+          script: |
+            echo "HOSTNAME=$(hostname)"
+            echo "INTERFACE_IPS=$(hostname -I)"
+            echo "VESTA_HEALTH=$(curl -fsS http://127.0.0.1:8094/health)"
