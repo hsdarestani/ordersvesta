@@ -182,7 +182,7 @@ function vbb_media_finish($payload) {
 
 // Handle chunk-only operations before the main v2 dispatcher. Check the raw op first;
 // otherwise merely inspecting a normal signed request would consume its nonce.
-add_action('template_redirect', function () {
+function vbb_handle_chunk_request() {
     if (!function_exists('vbb_v2_request') || !vbb_v2_request()) {
         return;
     }
@@ -208,4 +208,10 @@ add_action('template_redirect', function () {
         vbb_fail($e->getMessage(), 500);
     }
     exit;
-}, -1);
+}
+
+// The main bridge dispatcher runs on plugins_loaded at PHP_INT_MAX, so media
+// operations must be claimed one priority earlier or they fall through as
+// "Unknown operation" before template_redirect is reached.
+add_action('plugins_loaded', 'vbb_handle_chunk_request', PHP_INT_MAX - 1);
+add_action('template_redirect', 'vbb_handle_chunk_request', -1);
