@@ -7,6 +7,8 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
+require_once __DIR__ . '/paid-order.php';
+
 function vbb_force_variable_product_type($product_id) {
     $product_id = absint($product_id);
     if (!$product_id || get_post_type($product_id) !== 'product') {
