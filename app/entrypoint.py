@@ -34,8 +34,8 @@ from app import tracking_wake as twake
 from app import site_tracking_rows  # noqa: F401
 # Tracking status wrapper exposes whether WordPress has actually reached the bot.
 from app import tracking_status as tstatus
-# HTTP wrapper records every WordPress pull/ack hit before authentication.
-from app.tracking_telemetry import TrackingPullTelemetryHTTP
+# Paid Vestaland orders are verified against Hamoon and then written through the signed WP bridge.
+from app.vestaland_order_sync import VestalandOrderSyncHTTP
 
 # Apply menu / WooCommerce / tracking routers.
 m.start = ops.start
@@ -46,7 +46,7 @@ m.document = tq.document
 
 
 def main():
-    health = m.ThreadingHTTPServer(('0.0.0.0', 8080), TrackingPullTelemetryHTTP)
+    health = m.ThreadingHTTPServer(('0.0.0.0', 8080), VestalandOrderSyncHTTP)
     threading.Thread(target=health.serve_forever, daemon=True).start()
 
     request = HTTPXRequest(
