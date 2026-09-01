@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Vesta Bot Bridge
  * Description: Unified secure bridge between the Vesta Telegram bot and WooCommerce, including signed chunked media upload and variable-product type repair.
- * Version: 1.2.1
+ * Version: 1.2.2
  * Author: Vesta
  * Requires at least: 6.0
  * Requires PHP: 7.4
@@ -13,11 +13,12 @@ if (!defined('ABSPATH')) {
 }
 
 define('VBB_TOKEN_OPTION', 'vesta_bot_bridge_token');
-define('VBB_VERSION', '1.2.1');
+define('VBB_VERSION', '1.2.2');
 
 // All bridge features live inside this single WordPress plugin.
 require_once __DIR__ . '/chunk-upload.php';
 require_once __DIR__ . '/product-type.php';
+require_once __DIR__ . '/paid-order.php';
 
 register_activation_hook(__FILE__, function () {
     if (!get_option(VBB_TOKEN_OPTION)) {
