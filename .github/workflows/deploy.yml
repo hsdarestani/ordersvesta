@@ -99,6 +99,7 @@ jobs:
             docker compose ps
             docker compose logs --tail=30 bot
             curl -fsS http://127.0.0.1:8094/health
+            curl -fsS http://127.0.0.1:8094/vestaland-order-sync/health
 
             echo "Bridge network diagnostics (host)"
             getent ahosts vesta-cosmetics.ir || true
@@ -131,9 +132,23 @@ jobs:
             import time
             from app.bridge_client import BridgeWooClient
             started = time.monotonic()
+            count = BridgeWooClient().probe()
+            print('signed-probe success products=', count, 'seconds=', round(time.monotonic() - started, 3))
+            PY
+
+            echo "Vestaland paid-order operation probe (must fail before creating an order)"
+            docker compose exec -T bot python - <<'PY'
+            from app.bridge_client import BridgeWooClient
             try:
-                count = BridgeWooClient().probe()
-                print('signed-probe success products=', count, 'seconds=', round(time.monotonic() - started, 3))
+                BridgeWooClient().call('create_paid_order', {})
             except Exception as exc:
-                print('signed-probe error=', repr(exc), 'seconds=', round(time.monotonic() - started, 3))
+                text = str(exc)
+                print('paid-order-probe=', text)
+                if 'Unknown operation' in text or 'unknown operation' in text.lower():
+                    raise SystemExit('LIVE_VESTA_WORDPRESS_BRIDGE_IS_OLD')
+                if 'Invalid Vestaland receipt' not in text:
+                    raise SystemExit('UNEXPECTED_PAID_ORDER_PROBE_RESPONSE: ' + text)
+            else:
+                raise SystemExit('PAID_ORDER_PROBE_UNEXPECTEDLY_SUCCEEDED')
+            print('Vesta WordPress paid-order operation is installed.')
             PY
