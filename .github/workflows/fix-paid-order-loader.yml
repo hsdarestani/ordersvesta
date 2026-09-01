@@ -1,0 +1,37 @@
+name: Fix Vesta paid-order bridge loader
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-paid-order-loader.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch bridge loader and version
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('wordpress/vesta-bot-bridge/vesta-bot-bridge.php')
+          s = p.read_text()
+          s = s.replace(' * Version: 1.2.1', ' * Version: 1.2.2')
+          s = s.replace("define('VBB_VERSION', '1.2.1');", "define('VBB_VERSION', '1.2.2');")
+          needle = "require_once __DIR__ . '/product-type.php';"
+          loader = "require_once __DIR__ . '/paid-order.php';"
+          if loader not in s:
+              s = s.replace(needle, needle + "\n" + loader)
+          p.write_text(s)
+          PY
+      - name: Commit fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add wordpress/vesta-bot-bridge/vesta-bot-bridge.php
+          git diff --cached --quiet && exit 0
+          git commit -m "Load Vestaland paid-order bridge and bump Vesta plugin to 1.2.2"
+          git push
