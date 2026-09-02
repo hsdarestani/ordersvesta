@@ -5,19 +5,38 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: ordersvesta-production
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy over SSH
-        uses: appleboy/ssh-action@v1.2.0
-        env:
-          BOTTOKEN: ${{ secrets.BOTTOKEN }}
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Package exact source revision
+        run: git bundle create deploy.bundle HEAD
+      - name: Transfer source to VPS
+        uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.HOST }}
           username: root
           password: ${{ secrets.PASS }}
-          envs: BOTTOKEN
+          source: deploy.bundle
+          target: /tmp/ordersvesta-deploy-${{ github.sha }}
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          BOTTOKEN: ${{ secrets.BOTTOKEN }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        with:
+          host: ${{ secrets.HOST }}
+          username: root
+          password: ${{ secrets.PASS }}
+          envs: BOTTOKEN,SOURCE_COMMIT
           command_timeout: 10m
           script: |
             set -euo pipefail
@@ -34,13 +53,18 @@ jobs:
               apt-get install -y docker-compose-plugin
             fi
 
+            # Fetch the Actions checkout over SSH instead of requiring GitHub
+            # credentials on the VPS. Deploy exactly the revision that triggered this run.
+            BUNDLE_DIR="/tmp/ordersvesta-deploy-$SOURCE_COMMIT"
+            BUNDLE="$BUNDLE_DIR/deploy.bundle"
+            trap 'rm -f "$BUNDLE"; rmdir "$BUNDLE_DIR" 2>/dev/null || true' EXIT
             mkdir -p "$APP_DIR"
             if [ ! -d "$APP_DIR/.git" ]; then
-              git clone "$REPO" "$APP_DIR"
-            else
-              git -C "$APP_DIR" fetch origin main
-              git -C "$APP_DIR" reset --hard origin/main
+              git init "$APP_DIR"
+              git -C "$APP_DIR" remote add origin "$REPO"
             fi
+            git -C "$APP_DIR" fetch "$BUNDLE" HEAD
+            git -C "$APP_DIR" reset --hard "$SOURCE_COMMIT"
 
             mkdir -p "$APP_DIR/public_media"
             chmod 755 "$APP_DIR/public_media"
