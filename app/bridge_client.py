@@ -166,10 +166,12 @@ class BridgeWooClient:
 
     def _signed_get(self, op, payload=None):
         errors = []
-        deadline = time.monotonic() + 15.0
+        finishing = op == 'media_finish'
+        deadline = time.monotonic() + (120.0 if finishing else 15.0)
         # Every transport attempt gets a fresh nonce/signature. Chunk writes are
         # offset-based/idempotent, so retrying the same chunk is safe.
-        for label, endpoint in self._bridge_endpoints():
+        endpoints = self._bridge_endpoints()
+        for label, endpoint in (endpoints[:1] if finishing else endpoints):
             params = self._signed_params(op, payload)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -177,7 +179,7 @@ class BridgeWooClient:
             try:
                 # Reserve time for the fallback endpoint instead of spending the
                 # whole retry budget on the same WordPress rewrite route.
-                r = self._stdlib_get(endpoint, params, min(12.0, remaining))
+                r = self._stdlib_get(endpoint, params, min(120.0 if finishing else 12.0, remaining))
                 return self._decode(r)
             except TRANSIENT_ERRORS as exc:
                 errors.append(f'{label}: {exc}')

@@ -1,10 +1,7 @@
 import asyncio
-import hashlib
 import re
-import secrets
 import tempfile
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -14,56 +11,11 @@ from app import bridge_client as bridge
 from app import main as m
 from app import operations as ops
 from app import variations as var
-
-
-# ---------------------------------------------------------------------------
-# Faster signed-GET media upload
-# ---------------------------------------------------------------------------
-# 5 KiB keeps the signed request below common 8 KiB request-line limits. Six
-# parallel chunks make a single image materially faster without relying on POST
-# or an external download URL (both are blocked by the Vesta host/WAF setup).
-bridge.MEDIA_CHUNK_SIZE = 5120
+from app.media_upload import upload_media
 
 
 def fast_upload_media(self, path, filename):
-    data = Path(path).read_bytes()
-    if not data:
-        raise RuntimeError('فایل تصویر خالی است.')
-
-    upload_id = secrets.token_hex(16)
-    digest = hashlib.sha256(data).hexdigest()
-    safe_name = Path(filename or str(path)).name or 'vesta-product.jpg'
-
-    begin = self._signed_get('media_begin', {
-        'upload_id': upload_id,
-        'filename': safe_name,
-        'size': len(data),
-        'sha256': digest,
-    })
-    if begin.get('already_finished') and isinstance(begin.get('result'), dict):
-        return begin['result']
-
-    chunks = []
-    size = bridge.MEDIA_CHUNK_SIZE
-    for offset in range(0, len(data), size):
-        chunk = data[offset:offset + size]
-        chunks.append((offset, bridge._b64url(chunk)))
-
-    def send_chunk(item):
-        offset, encoded = item
-        return self._signed_get('media_chunk', {
-            'upload_id': upload_id,
-            'offset': offset,
-            'data': encoded,
-        })
-
-    workers = max(1, min(6, len(chunks)))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(send_chunk, item) for item in chunks]
-        for future in as_completed(futures):
-            future.result()
-
-    return self._signed_get('media_finish', {'upload_id': upload_id})
+    return upload_media(self, path, filename)
 
 
 bridge.BridgeWooClient.upload_media = fast_upload_media
@@ -74,7 +26,7 @@ bridge.BridgeWooClient.upload_media = fast_upload_media
 # ---------------------------------------------------------------------------
 GALLERY_BATCHES = {}
 GALLERY_DEBOUNCE_SECONDS = 1.15
-GALLERY_IMAGE_CONCURRENCY = 2
+GALLERY_IMAGE_CONCURRENCY = 1
 
 
 def gallery_keyboard():
@@ -158,19 +110,22 @@ async def _process_gallery_batch(uid, chat_id, group_id, bot):
 
         async def worker(idx, fid):
             async with sem:
-                media = await _upload_telegram_photo(bot, fid, idx)
-                return idx, media
+                try:
+                    media = await _upload_telegram_photo(bot, fid, idx)
+                    return idx, media, None
+                except Exception as exc:
+                    return idx, None, str(exc)
 
         tasks = [asyncio.create_task(worker(i, fid)) for i, fid in enumerate(file_ids)]
         results = {}
-        failures = []
+        failures = {}
         completed = 0
         for future in asyncio.as_completed(tasks):
-            try:
-                idx, media = await future
+            idx, media, error = await future
+            if error is None:
                 results[idx] = media
-            except Exception as exc:
-                failures.append(str(exc))
+            else:
+                failures[idx] = error
             completed += 1
             await _safe_edit(
                 progress,
@@ -182,12 +137,13 @@ async def _process_gallery_batch(uid, chat_id, group_id, bot):
         data['images'] = ([data['cover']] if data.get('cover') else []) + list(data.get('gallery') or [])
 
         if failures:
+            failed_numbers = '، '.join(str(i + 1) for i in sorted(failures))
             ops.update_state(uid, step='gallery', data=data)
             await _safe_edit(
                 progress,
                 f'⚠️ آپلود گالری کامل نشد.\n'
                 f'موفق: {len(uploaded)}/{len(file_ids)}\n{_bar(len(uploaded), len(file_ids))}\n\n'
-                'عکس‌های ناموفق را دوباره یکجا بفرستید.'
+                f'عکس‌های شمارهٔ {failed_numbers} از همین آلبوم ناموفق بودند؛ فقط همان‌ها را دوباره بفرستید.'
             )
             return
 
@@ -244,7 +200,7 @@ async def photo(update, ctx):
             return await update.message.reply_text(
                 '🖼 حالا عکس‌های گالری را **یکجا به صورت آلبوم** بفرستید.\n\n'
                 'همه عکس‌ها را در تلگرام با هم انتخاب و Send کنید؛ ربات بعد از دریافت کل آلبوم '
-                'آن‌ها را موازی آپلود می‌کند و Progress را نشان می‌دهد.\n\n'
+                'آن‌ها را آپلود می‌کند و پیشرفت را نشان می‌دهد.\n\n'
                 'اگر گالری ندارید «بدون گالری» را بزنید.',
                 reply_markup=gallery_keyboard(),
                 parse_mode='Markdown',
