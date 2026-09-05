@@ -76,6 +76,9 @@ function vbb_create_paid_vestaland_order($payload) {
         $product = $product_id ? wc_get_product($product_id) : false;
         if (!$product || !$product->exists()) { throw new Exception('Vestaland product not found: ' . $product_id); }
         if (!$product->is_purchasable() || !$product->is_in_stock()) { throw new Exception('Vestaland product is no longer purchasable: ' . $product_id); }
+        if ($product->managing_stock() && method_exists($product, 'has_enough_stock') && !$product->has_enough_stock($quantity)) {
+            throw new Exception('Vestaland product stock is insufficient: ' . $product_id);
+        }
         $current_price = vbb_vestaland_money_to_toman($product->get_price());
         if ($current_price <= 0 || $paid_price !== $current_price) {
             throw new Exception('Vestaland product price changed: ' . $product_id);
@@ -124,7 +127,8 @@ function vbb_create_paid_vestaland_order($payload) {
         );
     } catch (Throwable $e) {
         if ($order && $order->get_id()) {
-            wp_delete_post($order->get_id(), true);
+            // Use WooCommerce CRUD so cleanup also works with HPOS/custom order tables.
+            $order->delete(true);
         }
         throw $e;
     }
