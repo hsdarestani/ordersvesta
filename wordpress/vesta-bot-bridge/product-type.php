@@ -9,6 +9,33 @@ if (!defined('ABSPATH')) {
 
 require_once __DIR__ . '/paid-order.php';
 
+// WooCommerce registers product post types/taxonomies on init. The Bridge's fast
+// signed-GET path normally runs on plugins_loaded to avoid loading the theme, but
+// taxonomy/product operations cannot safely run that early (product_cat does not
+// exist yet and get_terms() returns "Invalid taxonomy"). For only the operations
+// that need WooCommerce registration, defer the existing Bridge dispatcher to the
+// end of init. Media/ping/paid-order traffic keeps the faster plugins_loaded path.
+add_action('plugins_loaded', function () {
+    if (!isset($_GET['vbb']) || (string) $_GET['vbb'] !== '2') {
+        return;
+    }
+
+    $op = isset($_GET['o']) ? sanitize_key(wp_unslash($_GET['o'])) : '';
+    $needs_init = array(
+        'categories',
+        'recent_products',
+        'create_product',
+        'create_variation',
+    );
+
+    if (!in_array($op, $needs_init, true)) {
+        return;
+    }
+
+    remove_action('plugins_loaded', 'vbb_handle_v2_request', PHP_INT_MAX);
+    add_action('init', 'vbb_handle_v2_request', PHP_INT_MAX);
+}, PHP_INT_MAX - 1);
+
 function vbb_force_variable_product_type($product_id) {
     $product_id = absint($product_id);
     if (!$product_id || get_post_type($product_id) !== 'product') {
