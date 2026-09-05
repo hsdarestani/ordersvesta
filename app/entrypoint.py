@@ -14,6 +14,8 @@ from app import variations as var
 from app import bridge_client  # noqa: F401
 # Product UX is imported last: it adds search-first category selection and faster media chunks.
 from app import product_ux as pux
+# Simple publishing persists a stable client key so uncertain timeouts can be retried safely.
+from app import simple_publish_recovery  # noqa: F401
 # Resumable variable publishing stores parent/child progress so retries never create a new parent.
 from app import variable_publish_recovery  # noqa: F401
 # Global runtime optimizations: keep-alive pools, caches, fast SQLite and shared API clients.
