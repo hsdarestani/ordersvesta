@@ -15,6 +15,17 @@ function vbb_chunk_tmp_dir() {
     return $dir;
 }
 
+
+function vbb_cleanup_stale_chunks() {
+    $dir = vbb_chunk_tmp_dir();
+    $cutoff = time() - (2 * HOUR_IN_SECONDS);
+    foreach ((array) glob(trailingslashit($dir) . '*.part') as $path) {
+        if (is_file($path) && @filemtime($path) < $cutoff) {
+            @unlink($path);
+        }
+    }
+}
+
 function vbb_chunk_id($payload) {
     $id = isset($payload['upload_id']) ? strtolower((string) $payload['upload_id']) : '';
     if (!preg_match('/^[a-f0-9]{32}$/', $id)) {
@@ -45,6 +56,7 @@ function vbb_chunk_decode($value) {
 }
 
 function vbb_media_begin($payload) {
+    vbb_cleanup_stale_chunks();
     $id = vbb_chunk_id($payload);
     $filename = sanitize_file_name(isset($payload['filename']) ? $payload['filename'] : 'vesta-product.jpg');
     $size = isset($payload['size']) ? intval($payload['size']) : 0;
@@ -89,6 +101,7 @@ function vbb_media_chunk($payload) {
     $id = vbb_chunk_id($payload);
     $meta = get_transient(vbb_chunk_meta_key($id));
     if (!is_array($meta)) {
+        @unlink(vbb_chunk_path($id));
         vbb_fail('Upload session expired.', 410);
     }
 
@@ -138,6 +151,7 @@ function vbb_media_finish($payload) {
 
     $meta = get_transient(vbb_chunk_meta_key($id));
     if (!is_array($meta)) {
+        @unlink(vbb_chunk_path($id));
         vbb_fail('Upload session expired.', 410);
     }
 
