@@ -8,7 +8,6 @@ on:
       - 'wordpress/vesta-bot-bridge/**'
       - '.github/workflows/package-wordpress-bridge.yml'
 
-# Packaging refresh for Bridge 1.2.2.
 jobs:
   package:
     runs-on: ubuntu-latest
@@ -25,10 +24,17 @@ jobs:
           php -l wordpress/vesta-bot-bridge/product-type.php
           php -l wordpress/vesta-bot-bridge/chunk-upload.php
           php -l wordpress/vesta-bot-bridge/paid-order.php
+          grep -q "Plugin Name: Vesta Bot Bridge" wordpress/vesta-bot-bridge/vesta-bot-bridge.php
+          grep -q "_vbb_client_key" wordpress/vesta-bot-bridge/product-type.php
       - name: Build installable ZIP
         run: |
+          set -euo pipefail
           cd wordpress
           zip -qr ../vesta-bot-bridge.zip vesta-bot-bridge
+          cd ..
+          unzip -t vesta-bot-bridge.zip
+          unzip -p vesta-bot-bridge.zip vesta-bot-bridge/vesta-bot-bridge.php | grep -q "Plugin Name: Vesta Bot Bridge"
+          test "$(unzip -Z1 vesta-bot-bridge.zip | grep -c '^vesta-bot-bridge/vesta-bot-bridge.php$')" -eq 1
       - uses: actions/upload-artifact@v4
         with:
           name: vesta-bot-bridge-wordpress
