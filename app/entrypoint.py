@@ -34,12 +34,17 @@ from app import tracking_wake as twake
 from app import site_tracking_rows  # noqa: F401
 # Tracking status wrapper exposes whether WordPress has actually reached the bot.
 from app import tracking_status as tstatus
+# Product-route recovery keeps top-level navigation global and repairs stale empty category caches.
+from app import product_route_recovery as prr
 # Paid Vestaland orders are verified against Hamoon and then written through the signed WP bridge.
 from app.vestaland_order_sync import VestalandOrderSyncHTTP
 
+# Wrap the fully composed text chain without bypassing tracking/status behavior.
+prr.ORIG_TEXT = tstatus.text
+
 # Apply menu / WooCommerce / tracking routers.
 m.start = ops.start
-m.text = tstatus.text
+m.text = prr.text
 m.callback = wopt.callback
 m.photo = pux.photo
 m.document = tq.document
