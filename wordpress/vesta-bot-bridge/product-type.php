@@ -131,10 +131,12 @@ add_action('woocommerce_after_product_object_save', function ($product) {
 function vbb_variation_saved_force_parent_type($variation_id) {
     $parent_id = wp_get_post_parent_id(absint($variation_id));
     if ($parent_id) {
+        // Keep the parent taxonomy correct, but DO NOT run a full variable-product
+        // sync from this save hook. vbb_create_variation() performs the required
+        // sync once after the child save. The old hook synced here as well, so each
+        // Bridge variation triggered two expensive full-parent syncs and routinely
+        // exceeded the bot's request timeout on the production shop.
         vbb_force_variable_product_type($parent_id);
-        if (class_exists('WC_Product_Variable')) {
-            WC_Product_Variable::sync($parent_id);
-        }
     }
 }
 add_action('woocommerce_new_product_variation', 'vbb_variation_saved_force_parent_type', 999, 1);
