@@ -14,6 +14,8 @@ from app import variations as var
 from app import bridge_client  # noqa: F401
 # Product UX is imported last: it adds search-first category selection and faster media chunks.
 from app import product_ux as pux
+# Resumable variable publishing stores parent/child progress so retries never create a new parent.
+from app import variable_publish_recovery  # noqa: F401
 # Global runtime optimizations: keep-alive pools, caches, fast SQLite and shared API clients.
 from app import performance  # noqa: F401
 # Optional-weight wrapper adds a "skip weight" button without changing the rest of the product flow.
@@ -26,6 +28,8 @@ st.ORIG_TEXT = wopt.text
 
 # Final production routing fixes: strict Shopino/site isolation and instant product wizard start.
 from app import routing_hotfix as rh
+# Mutating WooCommerce calls get one long request instead of unsafe short multi-route retries.
+from app import mutation_transport  # noqa: F401
 # Durable queue stores website-tracking files locally until the WordPress site pulls them.
 from app import tracking_queue as tq
 # Immediate wake worker removes the WP-Cron wait after a tracking file is queued.
