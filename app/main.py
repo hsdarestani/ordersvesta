@@ -9,6 +9,7 @@ import threading
 import unicodedata
 import uuid
 import zipfile
+from datetime import datetime
 from difflib import SequenceMatcher
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -433,6 +434,62 @@ def confident(cs):
     return cs[0]['score'] - cs[1]['score'] >= 7 and not (cs[1]['citymatch'] and cs[1]['dist'] <= 2)
 
 
+# ---------- Melipayamak tracking SMS ----------
+SMS_TEXT = "سفارش قشنگت از وِستا ارسال شد! 🎀📦\\nکد رهگیری مرسوله: {code}\\nممنون که وِستا رو انتخاب کردی 🤍"
+MELI_URL = os.getenv('MELLIPAYAMAK_URL', 'https://console.melipayamak.com/api/send/simple')
+
+def sms_phone(o):
+    x=o.get('order') or {}
+    return normalize_phone(x.get('phone') or o.get('phone') or x.get('mobile') or o.get('mobile'))
+
+def sms_segments(text):
+    return max(1, (len(text)+69)//70) if any(ord(c)>127 for c in text) else max(1,(len(text)+159)//160)
+
+def melipayamak_send(phone, text):
+    key=os.getenv('MELLIPAYAMAKAPIKEY')
+    if not key: raise RuntimeError('MELLIPAYAMAKAPIKEY تنظیم نشده است.')
+    payload={'to':phone,'text':text,'api_key':key}
+    sender=os.getenv('MELLIPAYAMAK_FROM')
+    if sender: payload['from']=sender
+    r=httpx.post(MELI_URL,json=payload,timeout=30)
+    if r.status_code>=400: raise RuntimeError(f'ملی پیامک HTTP {r.status_code}: {r.text[:300]}')
+    try: data=r.json()
+    except Exception: data={}
+    if isinstance(data,dict) and data.get('success') is False: raise RuntimeError(str(data))
+    return data
+
+async def sms_command(update, ctx):
+    if not await access(update): return
+    setv(f'sms_mode_{update.effective_user.id}', '1')
+    await update.message.reply_text('📱 ارسال پیامک کد رهگیری\nفایل xlsx/xlsm شاپینو را بفرستید.\nپس از تطبیق نام و شهر، پیش‌نمایش و هزینه می‌آید و فقط بعد از تأیید شما ارسال می‌شود.\nبرای خروج /cancel')
+
+async def sms_document(update, ctx):
+    d=update.message.document; suffix=Path(d.file_name or '').suffix.lower()
+    if suffix not in {'.xlsx','.xlsm'}: return await update.message.reply_text('فقط xlsx/xlsm بفرستید.')
+    msg=await update.message.reply_text('📥 در حال تطبیق سفارش‌ها…')
+    tmp=Path(tempfile.gettempdir())/f'{uuid.uuid4().hex}{suffix}'
+    try:
+        await (await d.get_file()).download_to_drive(custom_path=str(tmp))
+        rows=await asyncio.to_thread(parse_excel,tmp); orders=await asyncio.to_thread(api().list)
+        items=[]; unmatched=[]
+        for row in rows:
+            cs=candidates(row,orders)
+            if confident(cs):
+                c=cs[0]; order=next((o for o in orders if int(o.get('id') or 0)==c['id']),{})
+                phone=sms_phone(order)
+                if phone: items.append({'row':row,'order_id':c['id'],'name':c['name'],'city':c['city'],'phone':phone,'code':row['code']})
+                else: unmatched.append((row,'شماره موبایل ندارد'))
+            else: unmatched.append((row,'تطبیق نام/شهر قطعی نیست'))
+        price=float(os.getenv('MELLIPAYAMAK_PRICE_PER_SEGMENT','0') or 0)
+        total=sum(sms_segments(SMS_TEXT.format(code=x['code'])) for x in items)
+        cost=total*price
+        payload={'items':items,'unmatched':len(unmatched),'segments':total,'cost':cost,'status':'pending'}
+        token=save_pending(update.effective_chat.id,update.effective_user.id,payload)
+        kb=InlineKeyboardMarkup([[InlineKeyboardButton('✅ تأیید و ارسال',callback_data=f'z:{token}'),InlineKeyboardButton('❌ لغو',callback_data=f's:{token}')]])
+        await msg.edit_text(f'📊 پیش‌نمایش پیامک\nقابل ارسال: {len(items)}\nتطبیق‌نشده/بدون موبایل: {len(unmatched)}\nتعداد بخش پیامک: {total}\nهزینه تقریبی: {cost:,.0f} تومان\n\nهزینه واقعی طبق تعرفه پنل محاسبه می‌شود؛ ارسال فقط بعد از تأیید.',reply_markup=kb)
+    except Exception as e: await msg.edit_text(f'❌ خطا: {e}')
+    finally: tmp.unlink(missing_ok=True)
+
 # ---------- Telegram ----------
 async def access(update):
     u = update.effective_user
@@ -556,6 +613,9 @@ async def ask(chat, t, p):
 async def document(update, ctx):
     if not await access(update):
         return
+    if get(f'sms_mode_{update.effective_user.id}') == '1':
+        setv(f'sms_mode_{update.effective_user.id}', '0')
+        return await sms_document(update, ctx)
     try:
         client = api()
     except Exception as e:
@@ -652,6 +712,15 @@ async def callback(update, ctx):
     if not p or p['status'] != 'pending':
         return await q.edit_message_text('این مورد قبلاً بررسی شده.')
     try:
+        if a == 'z':
+            payload=p['payload']
+            if not payload.get('items'): return await q.edit_message_text('❌ موردی برای ارسال وجود ندارد.')
+            sent=0
+            for item in payload['items']:
+                text=SMS_TEXT.format(code=item['code'])
+                await asyncio.to_thread(melipayamak_send,item['phone'],text); sent+=1
+            done(t,'sms_sent')
+            return await q.edit_message_text(f'✅ {sent} پیامک ارسال شد.')
         if a == 's':
             done(t, 'skipped')
             return await q.edit_message_text('⏭ رد شد؛ تغییری در شاپینو انجام نشد.')
@@ -770,6 +839,7 @@ def main():
     a.add_handler(CommandHandler('status', status))
     a.add_handler(CommandHandler('allow', allow_cmd))
     a.add_handler(CommandHandler('users', users))
+    a.add_handler(CommandHandler('sms', sms_command))
     a.add_handler(CallbackQueryHandler(callback))
     a.add_handler(MessageHandler(filters.Document.ALL, document))
     a.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text))
