@@ -498,7 +498,7 @@ async def sms_document(update, ctx):
 async def sms_test_command(update, ctx):
     if not await access(update): return
     setv(f'sms_test_{update.effective_user.id}', 'phone')
-    await update.message.reply_text('🧪 تست پیامک\nشماره موبایل مقصد را بفرستید (مثال 09123456789).')
+    await update.effective_chat.send_message('🧪 تست پیامک\nشماره موبایل مقصد را بفرستید (مثال 09123456789).')
 
 async def sms_test_text(update, ctx):
     uid=update.effective_user.id
