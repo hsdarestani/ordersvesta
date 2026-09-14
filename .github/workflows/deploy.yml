@@ -31,6 +31,7 @@ jobs:
         uses: appleboy/ssh-action@v1.2.0
         env:
           BOTTOKEN: ${{ secrets.BOTTOKEN }}
+          MELLIPAYAMAK_USERNAME: ${{ secrets.MELLIPAYAMAK_USERNAME }}
           MELLIPAYAMAKAPIKEY: ${{ secrets.MELLIPAYAMAKAPIKEY }}
           MELLIPAYAMAK_FROM: ${{ secrets.MELLIPAYAMAK_FROM }}
           SOURCE_COMMIT: ${{ github.sha }}
@@ -38,7 +39,7 @@ jobs:
           host: ${{ secrets.HOST }}
           username: root
           password: ${{ secrets.PASS }}
-          envs: BOTTOKEN,MELLIPAYAMAKAPIKEY,MELLIPAYAMAK_FROM,SOURCE_COMMIT
+          envs: BOTTOKEN,MELLIPAYAMAK_USERNAME,MELLIPAYAMAKAPIKEY,MELLIPAYAMAK_FROM,SOURCE_COMMIT
           command_timeout: 10m
           script: |
             set -euo pipefail
@@ -73,6 +74,7 @@ jobs:
 
             cat > "$APP_DIR/.env" <<EOF
             BOTTOKEN=$BOTTOKEN
+            MELLIPAYAMAK_USERNAME=$MELLIPAYAMAK_USERNAME
             MELLIPAYAMAKAPIKEY=$MELLIPAYAMAKAPIKEY
             MELLIPAYAMAK_FROM=$MELLIPAYAMAK_FROM
             SHOP_ID=7944
