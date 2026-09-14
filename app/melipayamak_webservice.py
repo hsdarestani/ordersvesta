@@ -1,35 +1,54 @@
 import os
+import re
 
 import httpx
 
 
-DEFAULT_URL = 'https://rest.payamak-panel.com/api/SendSMS/SendSMS'
+DEFAULT_URL = 'https://rest.payamak-panel.com/api/SendSMS/BaseServiceNumber'
+DEFAULT_BODY_ID = '537070'
+
+
+def _pattern_value(text):
+    """Return the variable value expected by the approved tracking pattern.
+
+    Existing bot call-sites still pass the rendered human-readable SMS text. The
+    shared-service endpoint must receive only the value for the pattern's single
+    variable (the tracking code), so extract it without changing every caller.
+    """
+    value = str(text or '').strip()
+    match = re.search(r'کد\s*رهگیری\s*مرسوله\s*:\s*([^\r\n]+)', value)
+    if match:
+        return match.group(1).strip()
+    return value
 
 
 def send(phone, text):
     username = os.getenv('MELLIPAYAMAK_USERNAME', '').strip()
     api_key = os.getenv('MELLIPAYAMAKAPIKEY', '').strip()
-    sender = os.getenv('MELLIPAYAMAK_FROM', '').strip()
+    body_id = os.getenv('MELLIPAYAMAK_BODY_ID', DEFAULT_BODY_ID).strip() or DEFAULT_BODY_ID
     url = os.getenv('MELLIPAYAMAK_URL', DEFAULT_URL).strip() or DEFAULT_URL
+    pattern_value = _pattern_value(text)
 
     if not username:
         raise RuntimeError('MELLIPAYAMAK_USERNAME تنظیم نشده است.')
     if not api_key:
         raise RuntimeError('MELLIPAYAMAKAPIKEY تنظیم نشده است.')
-    if not sender:
-        raise RuntimeError('MELLIPAYAMAK_FROM تنظیم نشده است.')
+    if not body_id.isdigit():
+        raise RuntimeError('MELLIPAYAMAK_BODY_ID باید عددی باشد.')
+    if not pattern_value:
+        raise RuntimeError('کد رهگیری برای پیامک الگو خالی است.')
 
     payload = {
         'username': username,
+        # Melipayamak explicitly allows APIKey to be supplied in Password.
         'password': api_key,
-        'to': phone,
-        'from': sender,
-        'text': text,
-        'isFlash': 'false',
+        'text': pattern_value,
+        'to': str(phone),
+        'bodyId': body_id,
     }
 
-    # Melipayamak's REST Web Service expects form-urlencoded data. The API key
-    # is sent in the password field, as documented by the provider panel.
+    # Shared-service/pattern API. No dedicated sender number is required here;
+    # Melipayamak sends the approved template using its service line.
     response = httpx.post(url, data=payload, timeout=30)
     if response.status_code >= 400:
         raise RuntimeError(f'ملی پیامک HTTP {response.status_code}: {response.text[:300]}')
