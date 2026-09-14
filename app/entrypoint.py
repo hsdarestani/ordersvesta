@@ -53,9 +53,11 @@ m.start = ops.start
 m.text = prr.text
 m.callback = wopt.callback
 m.photo = pux.photo
+sms_document_handler = m.document
+
 async def routed_document(update, ctx):
     if m.get(f'sms_mode_{update.effective_user.id}') == '1':
-        return await m.document(update, ctx)
+        return await sms_document_handler(update, ctx)
     return await tq.document(update, ctx)
 
 m.document = routed_document
