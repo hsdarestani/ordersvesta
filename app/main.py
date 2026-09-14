@@ -495,6 +495,29 @@ async def sms_document(update, ctx):
     except Exception as e: await msg.edit_text(f'❌ خطا: {e}')
     finally: tmp.unlink(missing_ok=True)
 
+async def sms_test_command(update, ctx):
+    if not await access(update): return
+    setv(f'sms_test_{update.effective_user.id}', 'phone')
+    await update.message.reply_text('🧪 تست پیامک\nشماره موبایل مقصد را بفرستید (مثال 09123456789).')
+
+async def sms_test_text(update, ctx):
+    uid=update.effective_user.id
+    state=get(f'sms_test_{uid}')
+    value=(update.message.text or '').strip()
+    if state == 'phone':
+        phone=normalize_phone(value)
+        if not re.fullmatch(r'09\\d{9}', phone):
+            return await update.message.reply_text('شماره معتبر نیست؛ مثال: 09123456789')
+        setv(f'sms_test_phone_{uid}', phone); setv(f'sms_test_{uid}', 'code')
+        return await update.message.reply_text('کد رهگیری تستی را بفرستید.')
+    if state == 'code':
+        phone=get(f'sms_test_phone_{uid}'); code=value.translate(DIGITS).strip()
+        if not code: return await update.message.reply_text('کد رهگیری نمی‌تواند خالی باشد.')
+        setv(f'sms_test_{uid}', 'confirm'); setv(f'sms_test_code_{uid}', code)
+        kb=InlineKeyboardMarkup([[InlineKeyboardButton('✅ ارسال تست',callback_data=f'test:{uid}'),InlineKeyboardButton('❌ لغو',callback_data=f'testcancel:{uid}')]])
+        return await update.message.reply_text(f'شماره: {phone}\\nکد: {code}\\nمتن واقعی پیامک ارسال می‌شود. تأیید می‌کنید؟',reply_markup=kb)
+    return
+
 # ---------- Telegram ----------
 async def access(update):
     u = update.effective_user
@@ -713,6 +736,18 @@ async def callback(update, ctx):
     if not allowed(q.from_user.id):
         return await q.answer('دسترسی ندارید', show_alert=True)
     await q.answer()
+    if q.data and q.data.startswith('testcancel:'):
+        setv(f"sms_test_{q.from_user.id}", '')
+        return await q.edit_message_text('❌ تست لغو شد.')
+    if q.data and q.data.startswith('test:'):
+        if get('owner') != str(q.from_user.id): return await q.edit_message_text('⛔️ فقط مدیر اصلی مجاز است.')
+        uid=q.from_user.id; phone=get(f'sms_test_phone_{uid}'); code=get(f'sms_test_code_{uid}')
+        try:
+            melipayamak_send(phone, SMS_TEXT.format(code=code))
+            setv(f'sms_test_{uid}', '')
+            return await q.edit_message_text('✅ پیامک تست با موفقیت ارسال شد.')
+        except Exception as exc:
+            return await q.edit_message_text(f'❌ ارسال تست ناموفق بود: {exc}')
     if q.data == 'menu_sms':
         setv(f'sms_mode_{q.from_user.id}', '1')
         return await q.edit_message_text('📮 فایل xlsx/xlsm شاپینو را بفرستید. پس از تطبیق، هزینه و پیش‌نمایش می‌آید و فقط با تأیید مدیر ارسال می‌شود. زمان‌بندی: ایران (Asia/Tehran).')
