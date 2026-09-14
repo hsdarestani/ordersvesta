@@ -438,7 +438,7 @@ def confident(cs):
 
 
 # ---------- Melipayamak tracking SMS ----------
-SMS_TEXT = "سفارش قشنگت از وِستا ارسال شد! 🎀📦\\nکد رهگیری مرسوله: {code}\\nممنون که وِستا رو انتخاب کردی 🤍"
+SMS_TEXT = "سفارش قشنگت از وِستا ارسال شد! 🎀📦\nکد رهگیری مرسوله: {code}\nممنون که وِستا رو انتخاب کردی 🤍"
 MELI_URL = os.getenv('MELLIPAYAMAK_URL', 'https://console.melipayamak.com/api/send/simple')
 IRAN_TZ = ZoneInfo('Asia/Tehran')
 
@@ -515,7 +515,7 @@ async def sms_test_text(update, ctx):
         if not code: return await update.message.reply_text('کد رهگیری نمی‌تواند خالی باشد.')
         setv(f'sms_test_{uid}', 'confirm'); setv(f'sms_test_code_{uid}', code)
         kb=InlineKeyboardMarkup([[InlineKeyboardButton('✅ ارسال تست',callback_data=f'test:{uid}'),InlineKeyboardButton('❌ لغو',callback_data=f'testcancel:{uid}')]])
-        return await update.message.reply_text(f'شماره: {phone}\\nکد: {code}\\nمتن واقعی پیامک ارسال می‌شود. تأیید می‌کنید؟',reply_markup=kb)
+        return await update.message.reply_text(f'📱 شماره: {phone}\n📦 کد رهگیری: {code}\n\nمتن واقعی پیامک ارسال می‌شود.\nتأیید می‌کنید؟',reply_markup=kb)
     return
 
 # ---------- Telegram ----------
@@ -656,8 +656,8 @@ async def document(update, ctx):
     if suffix not in {'.xlsx', '.xlsm'}:
         return await update.message.reply_text('فقط xlsx/xlsm بفرستید.')
 
-    msg = await update.message.reply_text('📥 در حال خواندن فایل…')
-    tmp = Path(tempfile.gettempdir()) / f'{uuid.uuid4().hex}{suffix}'
+    msg=await update.message.reply_text('📥 در حال خواندن فایل…')
+    tmp=Path(tempfile.gettempdir()) / f'{uuid.uuid4().hex}{suffix}'
     try:
         f = await d.get_file()
         await f.download_to_drive(custom_path=str(tmp))
