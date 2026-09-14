@@ -452,9 +452,9 @@ def sms_segments(text):
 def melipayamak_send(phone, text):
     key=os.getenv('MELLIPAYAMAKAPIKEY')
     if not key: raise RuntimeError('MELLIPAYAMAKAPIKEY تنظیم نشده است.')
-    payload={'to':phone,'text':text}
-    sender=os.getenv('MELLIPAYAMAK_FROM')
-    if sender: payload['from']=sender
+    sender=os.getenv('MELLIPAYAMAK_FROM','').strip()
+    if not sender: raise RuntimeError('شماره خط ارسال ملی‌پیامک تنظیم نشده است؛ MELLIPAYAMAK_FROM را در Secrets اضافه کنید.')
+    payload={'from':sender,'to':phone,'text':text}
     # REST console authenticates with the API token in the URL: /api/send/simple/{Token}
     r=httpx.post(MELI_URL.rstrip('/')+'/'+key,json=payload,timeout=30)
     if r.status_code>=400: raise RuntimeError(f'ملی پیامک HTTP {r.status_code}: {r.text[:300]}')
@@ -748,6 +748,8 @@ async def callback(update, ctx):
             return await q.edit_message_text('✅ پیامک تست با موفقیت ارسال شد.')
         except Exception as exc:
             return await q.edit_message_text(f'❌ ارسال تست ناموفق بود: {exc}')
+    if q.data == 'menu_test':
+        return await sms_test_command(update, ctx)
     if q.data == 'menu_sms':
         setv(f'sms_mode_{q.from_user.id}', '1')
         return await q.edit_message_text('📮 فایل xlsx/xlsm شاپینو را بفرستید. پس از تطبیق، هزینه و پیش‌نمایش می‌آید و فقط با تأیید مدیر ارسال می‌شود. زمان‌بندی: ایران (Asia/Tehran).')
