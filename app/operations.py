@@ -88,7 +88,8 @@ def main_menu():
 
 def shopino_menu():
     return ReplyKeyboardMarkup([
-        ['📤 ارسال فایل رهگیری', '🔐 ورود شاپینو'],
+        ['📤 ارسال فایل رهگیری', '📮 ارسال پیامک رهگیری'],
+        ['🔐 ورود شاپینو'],
         ['📊 وضعیت شاپینو', '⬅️ منوی اصلی'],
     ], resize_keyboard=True)
 
@@ -578,6 +579,8 @@ async def text(update, ctx):
             'برای دیدن کاربران /users و برای اضافه‌کردن ادمین /allow TELEGRAM_ID را بزنید.',
             reply_markup=main_menu(),
         )
+    if text_value == '📮 ارسال پیامک رهگیری':
+        return await m.sms_command(update, ctx)
     if text_value == '📤 ارسال فایل رهگیری':
         return await update.message.reply_text('فایل xlsx/xlsm پست را همینجا ارسال کنید.', reply_markup=shopino_menu())
     if text_value == '🔐 ورود شاپینو':
