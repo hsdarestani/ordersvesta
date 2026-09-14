@@ -18,7 +18,7 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 import httpx
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 TOKEN = os.environ['BOTTOKEN']
@@ -466,7 +466,7 @@ def melipayamak_send(phone, text):
 async def sms_command(update, ctx):
     if not await access(update): return
     setv(f'sms_mode_{update.effective_user.id}', '1')
-    await update.message.reply_text('📱 ارسال پیامک کد رهگیری\nفایل xlsx/xlsm شاپینو را بفرستید.\nپس از تطبیق نام و شهر، پیش‌نمایش و هزینه می‌آید و فقط بعد از تأیید شما ارسال می‌شود.\nبرای خروج /cancel')
+    await update.message.reply_text('📱 ارسال پیامک کد رهگیری\nفایل xlsx/xlsm شاپینو را بفرستید.\nپس از تطبیق نام و شهر، پیش‌نمایش و هزینه می‌آید و فقط بعد از تأیید شما ارسال می‌شود.\nبرای تست دستی، گزینه زیر را بزنید.\nبرای برگشت /cancel', reply_markup=ReplyKeyboardMarkup([['🧪 تست ارسال پیامک'],['⬅️ منوی اصلی']], resize_keyboard=True))
 
 async def sms_document(update, ctx):
     d=update.message.document; suffix=Path(d.file_name or '').suffix.lower()
