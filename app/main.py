@@ -57,6 +57,8 @@ with db() as c:
         token TEXT PRIMARY KEY,chat INTEGER,user INTEGER,payload TEXT,status TEXT DEFAULT 'pending'
     );
     CREATE TABLE IF NOT EXISTS manual(user INTEGER PRIMARY KEY,token TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS sms_schedule(id INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT NOT NULL, run_at TEXT NOT NULL, status TEXT DEFAULT 'pending');
+    CREATE TABLE IF NOT EXISTS sms_log(id INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT, phone TEXT, status TEXT, detail TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS shopino_login(
         user INTEGER PRIMARY KEY,step TEXT NOT NULL,phone TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
@@ -488,7 +490,7 @@ async def sms_document(update, ctx):
         cost=total*price
         payload={'items':items,'unmatched':len(unmatched),'segments':total,'cost':cost,'status':'pending'}
         token=save_pending(update.effective_chat.id,update.effective_user.id,payload)
-        kb=InlineKeyboardMarkup([[InlineKeyboardButton('✅ تأیید و ارسال',callback_data=f'z:{token}'),InlineKeyboardButton('❌ لغو',callback_data=f's:{token}')]])
+        kb=InlineKeyboardMarkup([[InlineKeyboardButton('✅ تأیید و ارسال',callback_data=f'z:{token}'),InlineKeyboardButton('⏰ زمان‌بندی',callback_data=f'y:{token}')],[InlineKeyboardButton('❌ لغو',callback_data=f's:{token}')]])
         await msg.edit_text(f'📊 پیش‌نمایش پیامک\nقابل ارسال: {len(items)}\nتطبیق‌نشده/بدون موبایل: {len(unmatched)}\nتعداد بخش پیامک: {total}\nهزینه تقریبی: {cost:,.0f} تومان\n\nهزینه واقعی طبق تعرفه پنل محاسبه می‌شود؛ ارسال فقط بعد از تأیید.',reply_markup=kb)
     except Exception as e: await msg.edit_text(f'❌ خطا: {e}')
     finally: tmp.unlink(missing_ok=True)
@@ -714,6 +716,11 @@ async def callback(update, ctx):
     if q.data == 'menu_sms':
         setv(f'sms_mode_{q.from_user.id}', '1')
         return await q.edit_message_text('📮 فایل xlsx/xlsm شاپینو را بفرستید. پس از تطبیق، هزینه و پیش‌نمایش می‌آید و فقط با تأیید مدیر ارسال می‌شود. زمان‌بندی: ایران (Asia/Tehran).')
+    if q.data and q.data.startswith('y:'):
+        t=q.data.split(':',1)[1]
+        with db() as c:
+            c.execute('INSERT INTO manual(user,token) VALUES(?,?) ON CONFLICT(user) DO UPDATE SET token=excluded.token',(q.from_user.id,'schedule:'+t))
+        return await q.edit_message_text('⏰ زمان را به وقت ایران وارد کنید؛ مثال: 2026-09-15 18:30')
     if q.data == 'menu_status':
         try:
             count = await asyncio.to_thread(api().probe)
@@ -800,6 +807,19 @@ async def text(update, ctx):
                 return await update.message.reply_text(f'❌ ورود ناموفق: {e}\nکد را دوباره بفرستید یا /login را از اول بزنید.')
 
     with db() as c:
+        sr = c.execute('SELECT token FROM manual WHERE user=?', (uid,)).fetchone()
+    if sr and str(sr['token']).startswith('schedule:'):
+        token=str(sr['token']).split(':',1)[1]
+        try:
+            dt=datetime.strptime(text_value.strip(), '%Y-%m-%d %H:%M').replace(tzinfo=IRAN_TZ)
+            if dt <= datetime.now(IRAN_TZ): raise ValueError()
+            with db() as c:
+                c.execute('INSERT INTO sms_schedule(token,run_at) VALUES(?,?)',(token,dt.astimezone(ZoneInfo('UTC')).isoformat()))
+                c.execute('DELETE FROM manual WHERE user=?',(uid,))
+            return await update.message.reply_text('✅ زمان‌بندی شد: '+dt.strftime('%Y/%m/%d %H:%M')+' به وقت ایران')
+        except Exception:
+            return await update.message.reply_text('فرمت نادرست است. مثال: 2026-09-15 18:30')
+    with db() as c:
         r = c.execute('SELECT token FROM manual WHERE user=?', (uid,)).fetchone()
     if not r:
         return
@@ -825,6 +845,28 @@ async def text(update, ctx):
         await update.message.reply_text(f'❌ {e}')
 
 
+async def sms_scheduler():
+    while True:
+        try:
+            now=datetime.now(ZoneInfo('UTC')).isoformat()
+            with db() as c:
+                jobs=c.execute("SELECT id,token FROM sms_schedule WHERE status='pending' AND run_at<=?",(now,)).fetchall()
+                for job in jobs:
+                    c.execute("UPDATE sms_schedule SET status='running' WHERE id=?",(job['id'],))
+                    p=pending(job['token'])
+                    if not p: continue
+                    for item in p['payload'].get('items',[]):
+                        try:
+                            melipayamak_send(item['phone'],SMS_TEXT.format(code=item['code']))
+                            c.execute("INSERT INTO sms_log(token,phone,status,detail) VALUES(?,?,?,?)",(job['token'],item['phone'],'sent',''))
+                        except Exception as exc:
+                            c.execute("INSERT INTO sms_log(token,phone,status,detail) VALUES(?,?,?,?)",(job['token'],item['phone'],'failed',str(exc)[:300]))
+                    c.execute("UPDATE sms_schedule SET status='sent' WHERE id=?",(job['id'],))
+                    done(job['token'],'sms_scheduled_sent')
+        except Exception:
+            log.exception('sms scheduler failed')
+        await asyncio.sleep(20)
+
 class Health(BaseHTTPRequestHandler):
     def do_GET(self):
         b = json.dumps({
@@ -847,6 +889,7 @@ def main():
     threading.Thread(target=s.serve_forever, daemon=True).start()
 
     a = Application.builder().token(TOKEN).build()
+    a.post_init = lambda app: asyncio.create_task(sms_scheduler())
     a.add_handler(CommandHandler('start', start))
     a.add_handler(CommandHandler('help', start))
     a.add_handler(CommandHandler('login', login_cmd))
