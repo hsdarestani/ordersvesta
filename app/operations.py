@@ -82,6 +82,7 @@ def reset_user_flow(user_id):
 def main_menu():
     return ReplyKeyboardMarkup([
         ['📦 رهگیری شاپینو', '📮 ارسال پیامک رهگیری'],
+        ['مدیریت ارسال‌ها'],
         ['🛍 مدیریت ووکامرس', '⚙️ تنظیمات و اتصال‌ها'],
         ['👥 کاربران و دسترسی'],
     ], resize_keyboard=True)
@@ -580,7 +581,7 @@ async def text(update, ctx):
             'برای دیدن کاربران /users و برای اضافه‌کردن ادمین /allow TELEGRAM_ID را بزنید.',
             reply_markup=main_menu(),
         )
-    if text_value == '📮 ارسال پیامک رهگیری':
+    if text_value in {'📮 ارسال پیامک رهگیری', 'مدیریت ارسال‌ها'}:
         return await m.sms_command(update, ctx)
     if text_value == '📤 ارسال فایل رهگیری':
         return await update.message.reply_text('فایل xlsx/xlsm پست را همینجا ارسال کنید.', reply_markup=shopino_menu())
