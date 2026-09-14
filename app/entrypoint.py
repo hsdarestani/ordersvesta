@@ -7,6 +7,11 @@ from telegram.request import HTTPXRequest
 # Import runner first: it applies resilient Shopino/Telegram networking and admin login patches.
 from app import runner  # noqa: F401
 from app import main as m
+from app import melipayamak_webservice as melipayamak_ws
+
+# Use Melipayamak's username/API-key REST Web Service instead of Console-token API.
+m.melipayamak_send = melipayamak_ws.send
+
 # Import operations and variable-product flow.
 from app import operations as ops
 from app import variations as var
