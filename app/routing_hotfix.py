@@ -69,6 +69,12 @@ async def text(update, ctx):
 
     # Merely entering the website-tracking section is enough to route the next
     # spreadsheet to WordPress. The user should not need a second button press.
+    if m.get(f'sms_test_{uid}') in {'phone','code'}:
+        return await m.sms_test_text(update, ctx)
+
+    if value == '🧪 تست ارسال پیامک':
+        return await m.sms_test_command(update, ctx)
+
     if value == '📮 ارسال پیامک رهگیری':
         return await m.sms_command(update, ctx)
 
