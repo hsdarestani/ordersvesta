@@ -32,12 +32,13 @@ jobs:
         env:
           BOTTOKEN: ${{ secrets.BOTTOKEN }}
           MELLIPAYAMAKAPIKEY: ${{ secrets.MELLIPAYAMAKAPIKEY }}
+          MELLIPAYAMAK_FROM: ${{ secrets.MELLIPAYAMAK_FROM }}
           SOURCE_COMMIT: ${{ github.sha }}
         with:
           host: ${{ secrets.HOST }}
           username: root
           password: ${{ secrets.PASS }}
-          envs: BOTTOKEN,MELLIPAYAMAKAPIKEY,SOURCE_COMMIT
+          envs: BOTTOKEN,MELLIPAYAMAKAPIKEY,MELLIPAYAMAK_FROM,SOURCE_COMMIT
           command_timeout: 10m
           script: |
             set -euo pipefail
@@ -73,6 +74,7 @@ jobs:
             cat > "$APP_DIR/.env" <<EOF
             BOTTOKEN=$BOTTOKEN
             MELLIPAYAMAKAPIKEY=$MELLIPAYAMAKAPIKEY
+            MELLIPAYAMAK_FROM=$MELLIPAYAMAK_FROM
             SHOP_ID=7944
             EOF
             chmod 600 "$APP_DIR/.env"
