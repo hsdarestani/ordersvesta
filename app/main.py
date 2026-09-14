@@ -448,10 +448,11 @@ def sms_segments(text):
 def melipayamak_send(phone, text):
     key=os.getenv('MELLIPAYAMAKAPIKEY')
     if not key: raise RuntimeError('MELLIPAYAMAKAPIKEY تنظیم نشده است.')
-    payload={'to':phone,'text':text,'api_key':key}
+    payload={'to':phone,'text':text}
     sender=os.getenv('MELLIPAYAMAK_FROM')
     if sender: payload['from']=sender
-    r=httpx.post(MELI_URL,json=payload,timeout=30)
+    # REST console authenticates with the API token in the URL: /api/send/simple/{Token}
+    r=httpx.post(MELI_URL.rstrip('/')+'/'+key,json=payload,timeout=30)
     if r.status_code>=400: raise RuntimeError(f'ملی پیامک HTTP {r.status_code}: {r.text[:300]}')
     try: data=r.json()
     except Exception: data={}
@@ -713,6 +714,8 @@ async def callback(update, ctx):
         return await q.edit_message_text('این مورد قبلاً بررسی شده.')
     try:
         if a == 'z':
+            if get('owner') != str(q.from_user.id):
+                return await q.edit_message_text('⛔️ فقط مدیر اصلی می‌تواند ارسال را تأیید کند.')
             payload=p['payload']
             if not payload.get('items'): return await q.edit_message_text('❌ موردی برای ارسال وجود ندارد.')
             sent=0
