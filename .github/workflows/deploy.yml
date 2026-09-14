@@ -31,12 +31,13 @@ jobs:
         uses: appleboy/ssh-action@v1.2.0
         env:
           BOTTOKEN: ${{ secrets.BOTTOKEN }}
+          MELLIPAYAMAKAPIKEY: ${{ secrets.MELLIPAYAMAKAPIKEY }}
           SOURCE_COMMIT: ${{ github.sha }}
         with:
           host: ${{ secrets.HOST }}
           username: root
           password: ${{ secrets.PASS }}
-          envs: BOTTOKEN,SOURCE_COMMIT
+          envs: BOTTOKEN,MELLIPAYAMAKAPIKEY,SOURCE_COMMIT
           command_timeout: 10m
           script: |
             set -euo pipefail
@@ -71,6 +72,7 @@ jobs:
 
             cat > "$APP_DIR/.env" <<EOF
             BOTTOKEN=$BOTTOKEN
+            MELLIPAYAMAKAPIKEY=$MELLIPAYAMAKAPIKEY
             SHOP_ID=7944
             EOF
             chmod 600 "$APP_DIR/.env"
