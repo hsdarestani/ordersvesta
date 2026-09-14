@@ -10,6 +10,7 @@ import unicodedata
 import uuid
 import zipfile
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from difflib import SequenceMatcher
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -437,6 +438,7 @@ def confident(cs):
 # ---------- Melipayamak tracking SMS ----------
 SMS_TEXT = "سفارش قشنگت از وِستا ارسال شد! 🎀📦\\nکد رهگیری مرسوله: {code}\\nممنون که وِستا رو انتخاب کردی 🤍"
 MELI_URL = os.getenv('MELLIPAYAMAK_URL', 'https://console.melipayamak.com/api/send/simple')
+IRAN_TZ = ZoneInfo('Asia/Tehran')
 
 def sms_phone(o):
     x=o.get('order') or {}
@@ -508,15 +510,17 @@ async def access(update):
 async def start(update, ctx):
     if not await access(update):
         return
+    menu = InlineKeyboardMarkup([
+        [InlineKeyboardButton('📦 مدیریت ارسال‌ها', callback_data='menu_sms')],
+        [InlineKeyboardButton('📮 ارسال پیامک کد رهگیری', callback_data='menu_sms')],
+        [InlineKeyboardButton('⚙️ وضعیت اتصال', callback_data='menu_status')],
+    ])
     await update.message.reply_text(
         'ربات اتصال Vesta ↔ Shopino آماده است.\n\n'
-        '1) برای ورود به شاپینو: /login\n'
-        '2) شماره موبایل اکانت شاپینو را بفرستید.\n'
-        '3) کد پیامک‌شده را همینجا بفرستید.\n'
-        '4) بعد فایل xlsx/xlsm را ارسال کنید.\n\n'
-        'موارد مطمئن خودکار ثبت می‌شوند و موارد مشکوک از شما سؤال می‌شوند.\n\n'
-        '/status /allow /users\n'
-        'ورود دستی با sessionid هم به‌عنوان حالت پشتیبان: /session'
+        'برای ارسال پیامک کد رهگیری، گزینه «📮 ارسال پیامک کد رهگیری» را بزنید.\n'
+        'تمام زمان‌های زمان‌بندی بر اساس ایران (Asia/Tehran) هستند.\n\n'
+        '/login ورود شاپینو | /sms ارسال پیامک | /status وضعیت | /cancel لغو',
+        reply_markup=menu
     )
 
 
@@ -707,6 +711,15 @@ async def callback(update, ctx):
     if not allowed(q.from_user.id):
         return await q.answer('دسترسی ندارید', show_alert=True)
     await q.answer()
+    if q.data == 'menu_sms':
+        setv(f'sms_mode_{q.from_user.id}', '1')
+        return await q.edit_message_text('📮 فایل xlsx/xlsm شاپینو را بفرستید. پس از تطبیق، هزینه و پیش‌نمایش می‌آید و فقط با تأیید مدیر ارسال می‌شود. زمان‌بندی: ایران (Asia/Tehran).')
+    if q.data == 'menu_status':
+        try:
+            count = await asyncio.to_thread(api().probe)
+            return await q.edit_message_text(f'✅ اتصال شاپینو برقرار است؛ سفارش‌ها: {count}')
+        except Exception as e:
+            return await q.edit_message_text(f'❌ {e}')
     parts = (q.data or '').split(':')
     a, t = parts[0], parts[1]
     p = pending(t)
