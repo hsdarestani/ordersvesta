@@ -69,6 +69,9 @@ async def text(update, ctx):
 
     # Merely entering the website-tracking section is enough to route the next
     # spreadsheet to WordPress. The user should not need a second button press.
+    if value == '📮 ارسال پیامک رهگیری':
+        return await m.sms_command(update, ctx)
+
     if value == '📦 مدیریت ارسال‌ها':
         ops.set_state(uid, 'site_tracking', 'waiting_file', {})
         return await update.message.reply_text(
