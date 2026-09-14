@@ -506,7 +506,7 @@ async def sms_test_text(update, ctx):
     value=(update.message.text or '').strip()
     if state == 'phone':
         phone=normalize_phone(value)
-        if not re.fullmatch(r'09\\d{9}', phone):
+        if not re.fullmatch(r'09\d{9}', phone):
             return await update.message.reply_text('شماره معتبر نیست؛ مثال: 09123456789')
         setv(f'sms_test_phone_{uid}', phone); setv(f'sms_test_{uid}', 'code')
         return await update.message.reply_text('کد رهگیری تستی را بفرستید.')
