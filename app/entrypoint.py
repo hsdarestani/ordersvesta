@@ -29,9 +29,8 @@ from app import performance  # noqa: F401
 from app import media_bridge_recovery  # noqa: F401
 # Optional-weight wrapper adds a "skip weight" button without changing the rest of the product flow.
 from app import weight_optional as wopt
-# Tracking-SMS access wrapper lets every authorized bot admin send/test tracking SMS,
-# while keeping owner-only login/session/access-management boundaries unchanged.
-from app import sms_admin_access as sms_access
+# Legacy tracking-SMS callbacks remain in the fallback chain for old Telegram messages.
+from app import sms_admin_access as sms_access  # noqa: F401
 # Tracking review UX removes internal Shopino order-shipping IDs from the admin flow.
 from app import tracking_review_ux as review_ux
 # Site-tracking wrapper adds direct spreadsheet import into the site's tracking table.
@@ -41,7 +40,7 @@ from app import site_tracking as st
 st.ORIG_TEXT = wopt.text
 
 # Final production routing fixes: strict Shopino/site isolation and instant product wizard start.
-from app import routing_hotfix as rh
+from app import routing_hotfix as rh  # noqa: F401
 # Mutating WooCommerce calls get one long request instead of unsafe short multi-route retries.
 from app import mutation_transport  # noqa: F401
 # Durable queue stores website-tracking files locally until the WordPress site pulls them.
@@ -54,25 +53,47 @@ from app import site_tracking_rows  # noqa: F401
 from app import tracking_status as tstatus
 # Product-route recovery keeps top-level navigation global and repairs stale empty category caches.
 from app import product_route_recovery as prr
+# The SMS feature is a separate website-order workflow and never uses the marketplace session.
+from app import sms_website_flow as sms_flow
 # Paid Vestaland orders are verified against Hamoon and then written through the signed WP bridge.
 from app.vestaland_order_sync import VestalandOrderSyncHTTP
 
 # Wrap the fully composed text chain without bypassing tracking/status behavior.
 prr.ORIG_TEXT = tstatus.text
 
-# Apply menu / WooCommerce / tracking routers.
+# Apply menu / WooCommerce / tracking routers first, then put the independent SMS
+# router in front of them. Unrelated updates fall through unchanged.
+_base_text_handler = prr.text
+_base_callback_handler = review_ux.callback
+
+
+async def routed_text(update, ctx):
+    return await sms_flow.text(update, ctx, _base_text_handler)
+
+
+async def routed_callback(update, ctx):
+    return await sms_flow.callback(update, ctx, _base_callback_handler)
+
+
 m.start = ops.start
-m.text = prr.text
-m.callback = review_ux.callback
+m.sms_command = sms_flow.sms_command
+m.text = routed_text
+m.callback = routed_callback
 m.photo = pux.photo
-sms_document_handler = m.document
+
 
 async def routed_document(update, ctx):
-    if m.get(f'sms_mode_{update.effective_user.id}') == '1':
-        return await sms_document_handler(update, ctx)
+    if sms_flow.waiting_for_document(update.effective_user.id):
+        return await sms_flow.document(update, ctx)
     return await tq.document(update, ctx)
 
+
 m.document = routed_document
+
+
+async def startup(application):
+    await twake.startup(application)
+    await sms_flow.startup(application)
 
 
 def main():
@@ -100,7 +121,7 @@ def main():
         .request(request)
         .get_updates_request(updates_request)
         .concurrent_updates(8)
-        .post_init(twake.startup)
+        .post_init(startup)
         .build()
     )
     a.add_handler(CommandHandler('start', m.start))
@@ -111,6 +132,7 @@ def main():
     a.add_handler(CommandHandler('status', m.status))
     a.add_handler(CommandHandler('allow', m.allow_cmd))
     a.add_handler(CommandHandler('users', m.users))
+    a.add_handler(CommandHandler('sms', m.sms_command))
     a.add_handler(CallbackQueryHandler(m.callback))
     a.add_handler(MessageHandler(filters.PHOTO, m.photo))
     a.add_handler(MessageHandler(filters.Document.ALL, m.document))
