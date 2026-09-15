@@ -25,6 +25,8 @@ from app import simple_publish_recovery  # noqa: F401
 from app import variable_publish_recovery  # noqa: F401
 # Global runtime optimizations: keep-alive pools, caches, fast SQLite and shared API clients.
 from app import performance  # noqa: F401
+# Media uploads prefer the direct WordPress bridge and only use the Worker relay as fallback.
+from app import media_bridge_recovery  # noqa: F401
 # Optional-weight wrapper adds a "skip weight" button without changing the rest of the product flow.
 from app import weight_optional as wopt
 # Tracking-SMS access wrapper lets every authorized bot admin send/test tracking SMS,
