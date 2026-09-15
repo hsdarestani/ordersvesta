@@ -2,6 +2,11 @@
 // Paid Vestaland marketplace order sync for Vesta Bot Bridge.
 if (!defined('ABSPATH')) { exit; }
 
+// Read-only compact WooCommerce order feed used only by the independent
+// tracking-SMS workflow. Keeping it under the already-loaded bridge module means
+// existing WordPress installations receive the operation with the next plugin update.
+require_once __DIR__ . '/sms-orders.php';
+
 function vbb_vestaland_money_to_toman($value) {
     $amount = (float) $value;
     $currency = strtoupper((string) get_woocommerce_currency());
