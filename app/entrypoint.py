@@ -30,6 +30,8 @@ from app import weight_optional as wopt
 # Tracking-SMS access wrapper lets every authorized bot admin send/test tracking SMS,
 # while keeping owner-only login/session/access-management boundaries unchanged.
 from app import sms_admin_access as sms_access
+# Tracking review UX removes internal Shopino order-shipping IDs from the admin flow.
+from app import tracking_review_ux as review_ux
 # Site-tracking wrapper adds direct spreadsheet import into the site's tracking table.
 from app import site_tracking as st
 
@@ -59,7 +61,7 @@ prr.ORIG_TEXT = tstatus.text
 # Apply menu / WooCommerce / tracking routers.
 m.start = ops.start
 m.text = prr.text
-m.callback = sms_access.callback
+m.callback = review_ux.callback
 m.photo = pux.photo
 sms_document_handler = m.document
 
