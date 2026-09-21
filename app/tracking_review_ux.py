@@ -21,8 +21,6 @@ def _first_value(mapping, keys):
 def _display_order_ref(order_shipping):
     order = order_shipping.get('order') or {}
     # Shopino deployments can expose the visible order number under different keys.
-    # Never fall back to order-shipping.id: that is the internal API identifier that
-    # admins should not need to know.
     return (
         _first_value(order, ('order_number', 'number', 'code', 'reference', 'reference_number'))
         or _first_value(order_shipping, ('order_number', 'number', 'code', 'reference', 'reference_number'))
@@ -55,9 +53,13 @@ def candidates(row, orders):
 
 def _candidate_label(candidate):
     parts = []
-    ref = str(candidate.get('display_order_ref') or '').strip()
+
+    # Always show an order identifier so repeated customers can be distinguished.
+    # Prefer Shopino's visible order number when available; otherwise fall back to
+    # the order-shipping ID that the old UI showed and that the callback already uses.
+    ref = str(candidate.get('display_order_ref') or candidate.get('id') or '').strip()
     if ref:
-        parts.append(f'سفارش {ref}')
+        parts.append(f'سفارش #{ref}')
 
     name = str(candidate.get('name') or 'بدون نام').strip()
     city = str(candidate.get('city') or '').strip()
@@ -114,8 +116,7 @@ async def callback(update, ctx):
     cb = q.data or ''
 
     # Old messages may still contain the former "manual ID" button after a deploy.
-    # Re-render those messages using the safe human-readable review UI instead of
-    # asking an admin for Shopino's internal order-shipping ID.
+    # Re-render those messages using the current review UI.
     if cb.startswith('m:'):
         if not m.allowed(q.from_user.id):
             return await q.answer('دسترسی ندارید', show_alert=True)
