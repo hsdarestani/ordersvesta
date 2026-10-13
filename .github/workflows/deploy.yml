@@ -44,6 +44,14 @@ jobs:
           script: |
             set -euo pipefail
             export DEBIAN_FRONTEND=noninteractive
+            case " $(hostname -I) " in
+              *" 82.165.187.14 "*) echo "Shared Strato VPS verified" ;;
+              *) echo "Target is not the intended shared VPS; aborting."; exit 1 ;;
+            esac
+            if [ -z "${BOTTOKEN:-}" ] || [ -z "${MELLIPAYAMAK_USERNAME:-}" ] || [ -z "${MELLIPAYAMAKAPIKEY:-}" ]; then
+              echo "Required BOTTOKEN or MELLIPAYAMAK secret is missing; aborting."
+              exit 1
+            fi
             APP_DIR=/opt/ordersvesta
             DOMAIN=ordersvesta.smarbiz.sbs
             REPO=https://github.com/hsdarestani/ordersvesta.git
@@ -82,7 +90,7 @@ jobs:
             chmod 600 "$APP_DIR/.env"
 
             cd "$APP_DIR"
-            docker compose up -d --build --remove-orphans
+            docker compose -p ordersvesta up -d --build --remove-orphans
 
             if ! command -v nginx >/dev/null 2>&1; then
               apt-get update -qq
@@ -114,7 +122,7 @@ jobs:
             }
             EOF
             ln -sf "/etc/nginx/sites-available/$DOMAIN" "/etc/nginx/sites-enabled/$DOMAIN"
-            rm -f /etc/nginx/sites-enabled/default
+            # Preserve shared-server default and other application vhosts.
             nginx -t
             systemctl enable --now nginx
             systemctl reload nginx
@@ -126,8 +134,8 @@ jobs:
             certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect || true
 
             sleep 3
-            docker compose ps
-            docker compose logs --tail=30 bot
+            docker compose -p ordersvesta ps
+            docker compose -p ordersvesta logs --tail=30 bot
             curl -fsS http://127.0.0.1:8094/health
             curl -fsS http://127.0.0.1:8094/vestaland-order-sync/health
 
@@ -141,7 +149,7 @@ jobs:
               https://vesta-cosmetics.ir/ || true
 
             echo "Bridge network diagnostics (bot container)"
-            docker compose exec -T bot python - <<'PY'
+            docker compose -p ordersvesta exec -T bot python - <<'PY'
             import socket, ssl, time
             host = 'vesta-cosmetics.ir'
             for family, label in ((socket.AF_INET, 'ipv4'), (socket.AF_INET6, 'ipv6')):
@@ -158,7 +166,7 @@ jobs:
             PY
 
             echo "Signed Bridge probe from production bot"
-            docker compose exec -T bot python - <<'PY'
+            docker compose -p ordersvesta exec -T bot python - <<'PY'
             import time
             from app.bridge_client import BridgeWooClient
             started = time.monotonic()
@@ -167,7 +175,7 @@ jobs:
             PY
 
             echo "Vestaland paid-order operation probe (must fail before creating an order)"
-            docker compose exec -T bot python - <<'PY'
+            docker compose -p ordersvesta exec -T bot python - <<'PY'
             from app.bridge_client import BridgeWooClient
             try:
                 BridgeWooClient().call('create_paid_order', {})
