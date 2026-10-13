@@ -184,6 +184,27 @@ jobs:
                     print(label, 'error=', repr(exc), 'seconds=', round(time.monotonic() - started, 3))
             PY
 
+            # Fresh VPS installations have no WooCommerce credentials in the persistent bot database yet.
+            # Do not fail an otherwise healthy Telegram bot solely because initial in-bot onboarding is pending.
+            set +e
+            docker compose -p ordersvesta exec -T bot python - <<'PY'
+            from app.bridge_client import BridgeWooClient
+            try:
+                BridgeWooClient()
+            except RuntimeError as exc:
+                if 'تنظیم نشده' in str(exc):
+                    print('WooCommerce Bridge setup pending in Telegram')
+                    raise SystemExit(2)
+                raise
+            PY
+            BRIDGE_STATUS=$?
+            set -e
+            if [ "$BRIDGE_STATUS" -eq 2 ]; then
+              echo "Vesta Telegram bot is running; WooCommerce Bridge and Shopino onboarding must be completed in Telegram."
+            elif [ "$BRIDGE_STATUS" -ne 0 ]; then
+              echo "Unexpected Bridge initialization error"
+              exit "$BRIDGE_STATUS"
+            else
             echo "Signed Bridge probe from production bot"
             docker compose -p ordersvesta exec -T bot python - <<'PY'
             import time
@@ -209,3 +230,4 @@ jobs:
                 raise SystemExit('PAID_ORDER_PROBE_UNEXPECTEDLY_SUCCEEDED')
             print('Vesta WordPress paid-order operation is installed.')
             PY
+            fi
