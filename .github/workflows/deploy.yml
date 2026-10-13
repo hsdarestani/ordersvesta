@@ -13,6 +13,20 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      - name: Validate Pars VDS target and SSH credentials
+        env:
+          DEPLOY_HOST: ${{ secrets.HOST }}
+          DEPLOY_PASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          if [ "$DEPLOY_HOST" != "143.20.60.195" ]; then
+            echo "::error::HOST must be 143.20.60.195 for the new Pars VDS server."
+            exit 1
+          fi
+          if [ -z "$DEPLOY_PASS" ]; then
+            echo "::error::PASS is missing"
+            exit 1
+          fi
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -23,6 +37,7 @@ jobs:
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.HOST }}
+          port: ${{ secrets.SSH_PORT || '9011' }}
           username: root
           password: ${{ secrets.PASS }}
           source: deploy.bundle
@@ -37,6 +52,7 @@ jobs:
           SOURCE_COMMIT: ${{ github.sha }}
         with:
           host: ${{ secrets.HOST }}
+          port: ${{ secrets.SSH_PORT || '9011' }}
           username: root
           password: ${{ secrets.PASS }}
           envs: BOTTOKEN,MELLIPAYAMAK_USERNAME,MELLIPAYAMAKAPIKEY,MELLIPAYAMAK_FROM,SOURCE_COMMIT
@@ -45,7 +61,7 @@ jobs:
             set -euo pipefail
             export DEBIAN_FRONTEND=noninteractive
             case " $(hostname -I) " in
-              *" 82.165.187.14 "*) echo "Shared Strato VPS verified" ;;
+              *" 143.20.60.195 "*) echo "Shared Strato VPS verified" ;;
               *) echo "Target is not the intended shared VPS; aborting."; exit 1 ;;
             esac
             if [ -z "${BOTTOKEN:-}" ] || [ -z "${MELLIPAYAMAK_USERNAME:-}" ] || [ -z "${MELLIPAYAMAKAPIKEY:-}" ]; then
