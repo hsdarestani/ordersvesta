@@ -56,10 +56,13 @@ jobs:
           username: root
           password: ${{ secrets.PASS }}
           envs: BOTTOKEN,MELLIPAYAMAK_USERNAME,MELLIPAYAMAKAPIKEY,MELLIPAYAMAK_FROM,SOURCE_COMMIT
-          command_timeout: 10m
+          command_timeout: 35m
           script: |
             set -euo pipefail
             export DEBIAN_FRONTEND=noninteractive
+            # Only one application deploy may install OS packages or configure proxy at a time.
+            exec 9>/var/lock/pars-vds-bot-deploy.lock
+            flock -w 1200 9 || { echo "Timed out waiting for the shared VPS deployment lock"; exit 1; }
             case " $(hostname -I) " in
               *" 143.20.60.195 "*) echo "Shared Strato VPS verified" ;;
               *) echo "Target is not the intended shared VPS; aborting."; exit 1 ;;
