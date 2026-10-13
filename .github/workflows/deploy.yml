@@ -56,10 +56,13 @@ jobs:
           username: root
           password: ${{ secrets.PASS }}
           envs: BOTTOKEN,MELLIPAYAMAK_USERNAME,MELLIPAYAMAKAPIKEY,MELLIPAYAMAK_FROM,SOURCE_COMMIT
-          command_timeout: 10m
+          command_timeout: 35m
           script: |
             set -euo pipefail
             export DEBIAN_FRONTEND=noninteractive
+            # Only one application deploy may install OS packages or configure proxy at a time.
+            exec 9>/var/lock/pars-vds-bot-deploy.lock
+            flock -w 1200 9 || { echo "Timed out waiting for the shared VPS deployment lock"; exit 1; }
             case " $(hostname -I) " in
               *" 143.20.60.195 "*) echo "Shared Strato VPS verified" ;;
               *) echo "Target is not the intended shared VPS; aborting."; exit 1 ;;
@@ -181,6 +184,27 @@ jobs:
                     print(label, 'error=', repr(exc), 'seconds=', round(time.monotonic() - started, 3))
             PY
 
+            # Fresh VPS installations have no WooCommerce credentials in the persistent bot database yet.
+            # Do not fail an otherwise healthy Telegram bot solely because initial in-bot onboarding is pending.
+            set +e
+            docker compose -p ordersvesta exec -T bot python - <<'PY'
+            from app.bridge_client import BridgeWooClient
+            try:
+                BridgeWooClient()
+            except RuntimeError as exc:
+                if 'تنظیم نشده' in str(exc):
+                    print('WooCommerce Bridge setup pending in Telegram')
+                    raise SystemExit(2)
+                raise
+            PY
+            BRIDGE_STATUS=$?
+            set -e
+            if [ "$BRIDGE_STATUS" -eq 2 ]; then
+              echo "Vesta Telegram bot is running; WooCommerce Bridge and Shopino onboarding must be completed in Telegram."
+            elif [ "$BRIDGE_STATUS" -ne 0 ]; then
+              echo "Unexpected Bridge initialization error"
+              exit "$BRIDGE_STATUS"
+            else
             echo "Signed Bridge probe from production bot"
             docker compose -p ordersvesta exec -T bot python - <<'PY'
             import time
@@ -206,3 +230,4 @@ jobs:
                 raise SystemExit('PAID_ORDER_PROBE_UNEXPECTEDLY_SUCCEEDED')
             print('Vesta WordPress paid-order operation is installed.')
             PY
+            fi
