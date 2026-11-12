@@ -17,3 +17,4 @@ jobs:
       - run: python -m compileall -q app
       - run: python -m unittest discover -s tests -v
       - run: php -l wordpress/mu-plugins/vesta-mahak-product-bridge.php
+      - run: php tests/mahak_bridge_contract.php
