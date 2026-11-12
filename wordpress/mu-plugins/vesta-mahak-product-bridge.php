@@ -22,14 +22,20 @@ function vmb_api() {
 }
 
 function vmb_catalog($api) {
-    $response = $api->get_all_data('', array(
-        'fromProductVersion' => 0,
-        'fromProductDetailVersion' => 0,
-    ));
-    if (!is_array($response) || empty($response['success']) || !is_array($response['message'] ?? null)) {
-        throw new RuntimeException('دریافت فهرست کالاهای محک از بازارا ناموفق بود.');
+    // Bazara occasionally returns a transient unsuccessful catalog response.
+    // Retry only the READ, never the SaveAllData mutation. No cached catalog
+    // is used for duplicate-code validation.
+    for ($attempt = 0; $attempt < 2; $attempt++) {
+        $response = $api->get_all_data('', array(
+            'fromProductVersion' => 0,
+            'fromProductDetailVersion' => 0,
+        ));
+        if (is_array($response) && !empty($response['success']) && is_array($response['message'] ?? null)) {
+            return $response['message'];
+        }
+        if ($attempt === 0) { usleep(300000); }
     }
-    return $response['message'];
+    throw new RuntimeException('دریافت فهرست کالاهای محک از بازارا پس از دو تلاش ناموفق بود.');
 }
 
 function vmb_by_code($catalog, $code) {
