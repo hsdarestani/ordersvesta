@@ -53,6 +53,8 @@ from app import site_tracking_rows  # noqa: F401
 from app import tracking_status as tstatus
 # Product-route recovery keeps top-level navigation global and repairs stale empty category caches.
 from app import product_route_recovery as prr
+# Isolated accounting-product flow; does not touch WooCommerce publishing.
+from app import mahak_flow as mahak
 # The SMS feature is a separate website-order workflow and never uses the marketplace session.
 from app import sms_website_flow as sms_flow
 # Paid Vestaland orders are verified against Hamoon and then written through the signed WP bridge.
@@ -68,10 +70,14 @@ _base_callback_handler = review_ux.callback
 
 
 async def routed_text(update, ctx):
+    if await mahak.maybe_text(update, ctx):
+        return
     return await sms_flow.text(update, ctx, _base_text_handler)
 
 
 async def routed_callback(update, ctx):
+    if await mahak.maybe_callback(update, ctx):
+        return
     return await sms_flow.callback(update, ctx, _base_callback_handler)
 
 
@@ -133,6 +139,8 @@ def main():
     a.add_handler(CommandHandler('allow', m.allow_cmd))
     a.add_handler(CommandHandler('users', m.users))
     a.add_handler(CommandHandler('sms', m.sms_command))
+    a.add_handler(CommandHandler('mahak', mahak.start))
+    a.add_handler(CommandHandler('mahakstatus', mahak.command_status))
     a.add_handler(CallbackQueryHandler(m.callback))
     a.add_handler(MessageHandler(filters.PHOTO, m.photo))
     a.add_handler(MessageHandler(filters.Document.ALL, m.document))
