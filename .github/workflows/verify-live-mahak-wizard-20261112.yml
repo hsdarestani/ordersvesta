@@ -1,0 +1,41 @@
+name: Verify deployed Liora Mahak product wizard after merge
+on:
+  push:
+    branches: [feature/liora-mahak-product-registration-20261112]
+    paths: [.github/workflows/verify-live-mahak-wizard-20261112.yml]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Check deployed SHA bot menu and signed Mahak operations without writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+          PORT: ${{ secrets.SSH_PORT || '9011' }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -p "$PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo 'LIVE_BOT_COMMIT='$(git -C /opt/ordersvesta rev-parse --short HEAD)
+          docker exec -i ordersvesta-bot python - <<'PY'
+          from app import operations as ops
+          from app import entrypoint
+          from app import mahak_flow
+          from app.bridge_client import BridgeWooClient
+          text=str(ops.woo_menu())
+          print('MAHAK_MENU_LOADED='+str(mahak_flow.LABEL in text).lower())
+          print('MAHAK_ROUTER_LOADED='+str(callable(entrypoint.routed_text)).lower())
+          bridge=BridgeWooClient()
+          t=bridge.call('mahak_template', {'template_code':'8079'})
+          print('LIVE_SIGNED_TEMPLATE_OK='+str(str(t.get('code'))=='8079').lower())
+          s=bridge.call('mahak_status',{'request_key':'ffffffffffffffffffffffffffffffff'})
+          print('LIVE_READONLY_STATUS_OK='+str(s.get('status')=='not_submitted').lower())
+          print('NO_PRODUCT_CREATED=yes')
+          PY
+          curl -fsS --max-time 7 http://127.0.0.1:8094/health
+          echo LIVE_MAHAK_VERIFICATION_DONE=yes
+          REMOTE
