@@ -118,6 +118,20 @@ async def check_status(uid, chat):
         await chat.send_message(f'❌ بررسی وضعیت ناموفق بود: {exc}')
         return
     _save_job(uid, data, str(result.get('status') or 'unknown'))
+    if result.get('status') == 'not_submitted':
+        state = ops.get_state(uid)
+        if (state and state.get('flow') == 'mahak_product'
+                and state['data'].get('request_key') == data['request_key']
+                and state.get('step') == 'submitted'):
+            # WordPress has no idempotency record: original request never began.
+            # Reuse the SAME request key instead of creating a fresh product.
+            ops.update_state(uid, step='preview', data=state['data'])
+            await chat.send_message(
+                'این شناسه در سرور ثبت نشده است. می‌توانید همان درخواست قبلی را '
+                'بدون تغییر کد کالا دوباره تأیید کنید.',
+                reply_markup=_confirm_keyboard(),
+            )
+            return
     await chat.send_message(
         f"{_status_label(result)}\n\nکد کالا: {data.get('code', '—')}"
         f"\n{result.get('note') or ''}",
