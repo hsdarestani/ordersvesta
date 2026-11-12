@@ -43,6 +43,8 @@ st.ORIG_TEXT = wopt.text
 from app import routing_hotfix as rh  # noqa: F401
 # Mutating WooCommerce calls get one long request instead of unsafe short multi-route retries.
 from app import mutation_transport  # noqa: F401
+# Mahak requests require longer reads; SaveAllData is single-shot, never fanned out.
+from app import mahak_transport  # noqa: F401
 # Durable queue stores website-tracking files locally until the WordPress site pulls them.
 from app import tracking_queue as tq
 # Immediate wake worker removes the WP-Cron wait after a tracking file is queued.
