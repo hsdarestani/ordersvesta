@@ -7,6 +7,8 @@ $GLOBALS['catalog'] = array('Products' => array(
         'ProductCategoryId'=>418353, 'UnitName'=>'عدد','UnitName2'=>'عدد','Deleted'=>false)
 ));
 $GLOBALS['save_count'] = 0;
+$GLOBALS['catalog_read_count'] = 0;
+$GLOBALS['catalog_transient_failures'] = 1;
 $GLOBALS['outbound'] = null;
 function add_action($hook,$callback,$priority=10) {}
 function sanitize_text_field($v) { return trim(strip_tags($v)); }
@@ -22,6 +24,11 @@ class BazaraApi {
     public function __construct($value) {}
     public function login_token() { return array('success'=>true); }
     public function get_all_data($token,$input) {
+        $GLOBALS['catalog_read_count']++;
+        if ($GLOBALS['catalog_transient_failures'] > 0) {
+            $GLOBALS['catalog_transient_failures']--;
+            return array('success'=>false,'message'=>'transient catalog error');
+        }
         return array('success'=>true,'message'=>$GLOBALS['catalog']);
     }
     public function set_all_data($token,$input) {
@@ -39,6 +46,7 @@ $payload = array(
 );
 $template=vmb_template(array('template_code'=>'8079'));
 assert_true($template['category_id']===418353,'Template category mismatch');
+assert_true($GLOBALS['catalog_read_count']===2,'Read-only transient catalog failure must be retried once');
 $first=vmb_submit($payload);
 assert_true($first['status']==='accepted_pending_sync','Expected cloud accepted but pending');
 assert_true($GLOBALS['save_count']===1,'Must submit exactly once');
