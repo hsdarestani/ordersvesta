@@ -50,6 +50,17 @@ function vms_existing_woo($code, $product_id) {
             'suppress_filters' => true,
         ));
         if ($matches) { return (int) $matches[0]; }
+        // Native Bazara uses these parent-mapping keys for accounting sync.
+        $mapped = get_posts(array(
+            'post_type' => 'product',
+            'post_status' => array('publish', 'private', 'draft', 'pending', 'future'),
+            'posts_per_page' => 1,
+            'fields' => 'ids',
+            'meta_key' => 'mahak_id',
+            'meta_value' => (string) $product_id,
+            'suppress_filters' => true,
+        ));
+        if ($mapped) { return (int) $mapped[0]; }
     }
     return 0;
 }
@@ -61,6 +72,14 @@ function vms_search($payload) {
     }
     $catalog = vmb_catalog(vmb_api());
     $matches = array();
+    // One pass over details avoids an expensive full scan for each product.
+    $details_by_product = array();
+    foreach ((array) ($catalog['ProductDetails'] ?? array()) as $raw_detail) {
+        $detail = (array) $raw_detail;
+        if (!empty($detail['Deleted'])) { continue; }
+        $pid = (int) ($detail['ProductId'] ?? 0);
+        if ($pid) { $details_by_product[$pid][] = $detail; }
+    }
     foreach ((array) ($catalog['Products'] ?? array()) as $raw) {
         $product = (array) $raw;
         if (!empty($product['Deleted'])) { continue; }
@@ -70,7 +89,7 @@ function vms_search($payload) {
         if (!$id || $code === '' || $name === '') { continue; }
         $normalized_name = vms_normalize($name);
         $normalized_code = vms_normalize($code);
-        $details = vms_product_details($catalog, $product);
+        $details = $details_by_product[$id] ?? array();
         $barcodes = array();
         foreach ($details as $d) {
             foreach (array('Barcode', 'BarCode', 'ProductDetailCode') as $field) {
@@ -180,8 +199,8 @@ function vms_import_existing($payload) {
     if ($woo_id) {
         return vms_public_result(array('status' => 'already_on_site', 'woo_id' => $woo_id));
     }
-    if (count($details) > 1) {
-        throw new RuntimeException('این کالا چند ردیف/تنوع حسابداری دارد. برای جلوگیری از انتقال اشتباه، ورود خودکار آن فعلاً مجاز نیست.');
+    if (count($details) !== 1 || (int) ($details[0]['ProductDetailId'] ?? 0) <= 0) {
+        throw new RuntimeException('این کالا فاقد یک ردیف یکتای معتبر در محک است یا چند تنوع دارد؛ انتقال خودکار مجاز نیست.');
     }
     if (!class_exists('WC_Product_Simple')) {
         throw new RuntimeException('ساخت محصول در ووکامرس در دسترس نیست.');
@@ -209,6 +228,10 @@ function vms_import_existing($payload) {
             $item->set_manage_stock(false);
             // No accounting price/stock is imported without verifying unit conversion
             // and stock sync behavior. A draft cannot be purchased.
+            // Bazara's actual mapping keys are mahak_id and mahak_product_detail_id.
+            // Set them ONLY after confirming there is one unique accounting detail.
+            $item->update_meta_data('mahak_id', (string) $id);
+            $item->update_meta_data('mahak_product_detail_id', (string) (int) $details[0]['ProductDetailId']);
             $item->update_meta_data('_vesta_mahak_product_id', (string) $id);
             $item->update_meta_data('_vesta_mahak_product_code', $code);
             $item->update_meta_data('_vesta_mahak_import_source', 'bazara_existing_product');
