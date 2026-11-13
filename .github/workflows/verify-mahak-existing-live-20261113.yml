@@ -1,0 +1,51 @@
+name: Verify signed existing Mahak catalog lookup after bot deploy
+on:
+  workflow_run:
+    workflows: ["Deploy OrdersVesta Bot"]
+    types: [completed]
+permissions:
+  contents: read
+jobs:
+  read-only-end-to-end:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Verify bot-to-WordPress-to-Mahak search and status, no writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+          PORT: ${{ secrets.SSH_PORT || '9011' }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          sshpass -e ssh -p "$PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          cd /opt/ordersvesta
+          docker compose -p ordersvesta exec -T bot python - <<'PY'
+          from app import mahak_transport  # activate longer signed GET reads
+          from app.bridge_client import BridgeWooClient
+          bridge = BridgeWooClient()
+          result = bridge.call('mahak_site_search', {'query': '8079'})
+          items = result.get('items') or []
+          matches = [p for p in items if str(p.get('code')) == '8079']
+          if not matches:
+              raise SystemExit('SIGNED_MAHAK_SEARCH_DID_NOT_FIND_EXISTING_PRODUCT')
+          product = matches[0]
+          if not int(product['product_id']):
+              raise SystemExit('MAHAK_ID_EMPTY')
+          print('SIGNED_MAHAK_SEARCH=PASSED')
+          print('ACCOUNTING_PRODUCT_IDENTIFIED=yes')
+          print('RESULTS=', len(items))
+          state = bridge.call('mahak_site_status', {
+              'code': product['code'], 'product_id': product['product_id'],
+          })
+          if not isinstance(state, dict) or 'status' not in state:
+              raise SystemExit('MAHAK_SITE_STATUS_FAILED')
+          print('SIGNED_MAHAK_SITE_STATUS=PASSED')
+          print('STATUS=', state['status'])
+          print('MAHAK_MUTATIONS=none')
+          print('WOOCOMMERCE_MUTATIONS=none')
+          PY
+          REMOTE
