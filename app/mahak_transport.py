@@ -10,8 +10,8 @@ import time
 from app import bridge_client as bridge
 
 _PREVIOUS = bridge.BridgeWooClient._signed_get
-_READ_OPS = {'mahak_template', 'mahak_status'}
-_WRITE_OPS = {'mahak_submit'}
+_READ_OPS = {'mahak_template', 'mahak_status', 'mahak_site_search', 'mahak_site_status'}
+_WRITE_OPS = {'mahak_submit', 'mahak_site_import'}
 
 
 def mahak_endpoints(client):
