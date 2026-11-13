@@ -57,6 +57,7 @@ from app import tracking_status as tstatus
 from app import product_route_recovery as prr
 # Isolated accounting-product flow; does not touch WooCommerce publishing.
 from app import mahak_flow as mahak
+from app import mahak_existing_flow as mahak_existing
 # The SMS feature is a separate website-order workflow and never uses the marketplace session.
 from app import sms_website_flow as sms_flow
 # Paid Vestaland orders are verified against Hamoon and then written through the signed WP bridge.
@@ -72,12 +73,16 @@ _base_callback_handler = review_ux.callback
 
 
 async def routed_text(update, ctx):
+    if await mahak_existing.maybe_text(update, ctx):
+        return
     if await mahak.maybe_text(update, ctx):
         return
     return await sms_flow.text(update, ctx, _base_text_handler)
 
 
 async def routed_callback(update, ctx):
+    if await mahak_existing.maybe_callback(update, ctx):
+        return
     if await mahak.maybe_callback(update, ctx):
         return
     return await sms_flow.callback(update, ctx, _base_callback_handler)
