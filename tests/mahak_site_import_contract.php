@@ -16,10 +16,10 @@ $GLOBALS['catalog'] = array(
         array('ProductCode'=>'998815','Name'=>'Liora Multi Detail','ProductId'=>779,'Deleted'=>false),
     ),
     'ProductDetails' => array(
-        array('ProductCode'=>'998813','ProductId'=>777,'Barcode'=>'6260000099','Price1'=>990000, 'Count1'=>22),
-        array('ProductCode'=>'998814','ProductId'=>778,'Barcode'=>'6260000088','Count1'=>41),
-        array('ProductCode'=>'998815','ProductId'=>779,'Barcode'=>'6a','Count1'=>20),
-        array('ProductCode'=>'998815','ProductId'=>779,'Barcode'=>'6b','Count1'=>16),
+        array('ProductDetailId'=>9001,'ProductCode'=>'998813','ProductId'=>777,'Barcode'=>'6260000099','Price1'=>990000, 'Count1'=>22),
+        array('ProductDetailId'=>9002,'ProductCode'=>'998814','ProductId'=>778,'Barcode'=>'6260000088','Count1'=>41),
+        array('ProductDetailId'=>9003,'ProductCode'=>'998815','ProductId'=>779,'Barcode'=>'6a','Count1'=>20),
+        array('ProductDetailId'=>9004,'ProductCode'=>'998815','ProductId'=>779,'Barcode'=>'6b','Count1'=>16),
     ),
 );
 function add_action($hook,$callback,$priority=10) {}
@@ -88,6 +88,8 @@ expect($GLOBALS['wc_items'][3001]['sku'] === '998813', 'Mahak product code must 
 expect($GLOBALS['wc_items'][3001]['manage_stock'] === false, 'do not copy accounting stock');
 expect(!isset($GLOBALS['wc_items'][3001]['price']), 'do not guess Rial/Toman prices');
 expect($GLOBALS['wc_items'][3001]['meta']['_vesta_mahak_product_id'] === '777', 'accounting ID lost');
+expect($GLOBALS['wc_items'][3001]['meta']['mahak_id'] === '777', 'Bazara Mahak parent link missing');
+expect($GLOBALS['wc_items'][3001]['meta']['mahak_product_detail_id'] === '9001', 'Bazara Mahak detail link missing');
 $again = vms_import_existing($payload);
 expect($again['woo_id'] === 3001 && $GLOBALS['save_count'] === 1, 'duplicate import was not idempotent');
 $existing = vms_import_existing(array('product_id'=>778,'code'=>'998814'));
@@ -98,7 +100,7 @@ try {
     vms_import_existing(array('product_id'=>779,'code'=>'998815'));
     throw new RuntimeException('Multiple accounting details were incorrectly imported as simple product');
 } catch (RuntimeException $e) {
-    expect(strpos($e->getMessage(), 'چند') !== false, 'wrong variation guard');
+    expect(strpos($e->getMessage(), 'تنوع') !== false, 'wrong variation guard');
 }
 try {
     vms_import_existing(array('product_id'=>777,'code'=>'998814'));
