@@ -14,7 +14,7 @@ from app import main as m
 from app import operations as ops
 from app.bridge_client import BridgeWooClient
 
-LABEL = '🧾 ثبت کالا در محک'
+LABEL = '🧾 ساخت کالای جدید در محک'
 PERSIAN_DIGITS = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 CODE_RE = re.compile(r'^[A-Za-z0-9_-]{1,24}$')
 
@@ -141,7 +141,7 @@ async def check_status(uid, chat):
 
 async def maybe_text(update, ctx):
     text = (update.message.text or '').strip()
-    if text == LABEL:
+    if text in {LABEL, '🧾 ثبت کالا در محک'}:
         await start(update, ctx)
         return True
 
@@ -152,7 +152,7 @@ async def maybe_text(update, ctx):
 
     # Standard top-level buttons keep their existing route and discard draft.
     if text in {'⬅️ منوی اصلی', '❌ لغو عملیات',
-                '🛍 مدیریت ووکامرس', '📦 رهگیری شاپینو',
+                '🛍 مدیریت ووکامرس', '📥 کالای محک به سایت', '📦 رهگیری شاپینو',
                 '⚙️ تنظیمات و اتصال‌ها'}:
         return False
     if not await m.access(update):
