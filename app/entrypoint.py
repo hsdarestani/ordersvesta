@@ -147,6 +147,7 @@ def main():
     a.add_handler(CommandHandler('users', m.users))
     a.add_handler(CommandHandler('sms', m.sms_command))
     a.add_handler(CommandHandler('mahak', mahak.start))
+    a.add_handler(CommandHandler(['mahaksite', 'importmahak'], mahak_existing.start))
     a.add_handler(CommandHandler('mahakstatus', mahak.command_status))
     a.add_handler(CallbackQueryHandler(m.callback))
     a.add_handler(MessageHandler(filters.PHOTO, m.photo))
