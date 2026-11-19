@@ -127,6 +127,8 @@ def _status_label(result):
         return '✅ کالا در فهرست خروجی ابری محک دیده می‌شود. وجود آن در نرم‌افزار ویندوزی باید جداگانه کنترل شود.'
     if status == 'accepted_pending_sync':
         return '🟠 API محک درخواست را قبول کرده؛ هنوز تأیید ورود به نرم‌افزار ویندوزی نداریم.'
+    if status == 'details_unverified':
+        return '⚠️ کالا در محک ابری دیده شده ولی تعداد، نام یا قیمت همه تنوع‌ها هنوز با درخواست تطبیق ندارد؛ بدون ثبت مجدد بررسی شود.'
     if status == 'unknown':
         return '⚠️ نتیجه نامشخص است. ثبت دوباره با درخواست جدید ممنوع است؛ فقط وضعیت را بررسی کنید.'
     if status == 'rejected':
@@ -198,6 +200,14 @@ async def check_status(uid, chat):
         f"\n{result.get('note') or ''}",
         reply_markup=_status_keyboard(),
     )
+    warehouse=result.get('stock_intent_status')
+    if warehouse=='warehouse_document_required':
+        await chat.send_message(
+            '📦 تعدادهای اولیه در درخواست ثبت شده‌اند، اما هنوز با سند انبار محک تأیید نشده‌اند. '
+            'تا ثبت واقعی موجودی، اعداد به سایت تحمیل نمی‌شوند.'
+        )
+    elif warehouse=='warehouse_quantity_verified':
+        await chat.send_message('✅ موجودی درخواستی با اطلاعات واقعی انبار بازارا تطبیق دارد.')
     if result.get('status') in ('accepted_pending_sync','visible_in_cloud_export'):
         if not data.get('content_staged') and 'image_ids' in data:
             await _stage_for_site(uid,data,chat)
