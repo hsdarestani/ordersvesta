@@ -57,9 +57,6 @@ from app import tracking_status as tstatus
 from app import product_route_recovery as prr
 # Isolated accounting-product flow; does not touch WooCommerce publishing.
 from app import mahak_flow as mahak
-from app import mahak_existing_flow as mahak_existing
-# Editorial-only Telegram wizard for items whose Mahak/Woo identity is verified.
-from app import mahak_content_flow as mahak_content
 # The SMS feature is a separate website-order workflow and never uses the marketplace session.
 from app import sms_website_flow as sms_flow
 # Paid Vestaland orders are verified against Hamoon and then written through the signed WP bridge.
@@ -75,20 +72,12 @@ _base_callback_handler = review_ux.callback
 
 
 async def routed_text(update, ctx):
-    if await mahak_content.maybe_text(update, ctx):
-        return
-    if await mahak_existing.maybe_text(update, ctx):
-        return
     if await mahak.maybe_text(update, ctx):
         return
     return await sms_flow.text(update, ctx, _base_text_handler)
 
 
 async def routed_callback(update, ctx):
-    if await mahak_content.maybe_callback(update, ctx):
-        return
-    if await mahak_existing.maybe_callback(update, ctx):
-        return
     if await mahak.maybe_callback(update, ctx):
         return
     return await sms_flow.callback(update, ctx, _base_callback_handler)
@@ -99,7 +88,7 @@ m.sms_command = sms_flow.sms_command
 m.text = routed_text
 m.callback = routed_callback
 async def routed_photo(update, ctx):
-    if await mahak_content.maybe_photo(update, ctx):
+    if await mahak.maybe_photo(update, ctx):
         return
     return await pux.photo(update, ctx)
 
@@ -159,8 +148,7 @@ def main():
     a.add_handler(CommandHandler('users', m.users))
     a.add_handler(CommandHandler('sms', m.sms_command))
     a.add_handler(CommandHandler('mahak', mahak.start))
-    a.add_handler(CommandHandler(['mahaksite', 'importmahak'], mahak_existing.start))
-    a.add_handler(CommandHandler(['mahakcontent', 'productcontent'], mahak_content.start))
+    a.add_handler(CommandHandler(['mahaksite', 'importmahak','mahakcontent','productcontent'], mahak.start))
     a.add_handler(CommandHandler('mahakstatus', mahak.command_status))
     a.add_handler(CallbackQueryHandler(m.callback))
     a.add_handler(MessageHandler(filters.PHOTO, m.photo))
