@@ -110,7 +110,17 @@ function vmb_submit($data) {
     $name = sanitize_text_field(trim((string) ($data['name'] ?? '')));
     $code = trim((string) ($data['code'] ?? ''));
     $template_code = trim((string) ($data['template_code'] ?? ''));
-    $price = trim((string) ($data['price_rial'] ?? ''));
+    // New unified bot flow always quotes and submits TOMAN, matching current
+    // Bazara and Woo currency settings. Keep price_rial for old saved requests.
+    $isToman=array_key_exists('price_toman',$data);
+    $price = trim((string) ($isToman?$data['price_toman']:($data['price_rial']??'')));
+    if($isToman) {
+        $settings=get_option('bazara_visitor_settings',[]);
+        if(!is_array($settings) ||
+           ($settings['selectCurrencySoftware']??'')!=='toman' ||
+           ($settings['selectCurrencyPlugin']??'')!=='toman')
+           throw new RuntimeException('واحد پول محک و سایت روی تومان یکسان نیست؛ قبل از ثبت اصلاح کنید.');
+    }
     if (mb_strlen($name) < 3 || mb_strlen($name) > 180) {
         throw new InvalidArgumentException('نام کالا باید بین ۳ تا ۱۸۰ نویسه باشد.');
     }
@@ -148,6 +158,7 @@ function vmb_submit($data) {
         'code' => $code,
         'name' => $name,
         'template_code' => $template_code,
+        'price_unit' => $isToman ? 'toman' : 'legacy_rial',
         'requested_at' => gmdate('c'),
     );
     if (!add_option($request_key, $record, '', false)) {
