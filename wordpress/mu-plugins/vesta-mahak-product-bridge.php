@@ -73,7 +73,7 @@ function vmb_template_variant_group($catalog,$template) {
         $groups[$c][$v]=true;
     }
     if(count($groups)!==1)return null; // Multiple independent dimensions need a reviewed mapping.
-    $c=array_key_first($groups);
+    $c=(string)array_key_first($groups);
     return ['group_code'=>$c,'sample_values'=>array_slice(array_keys($groups[$c]),0,8)];
 }
 function vmb_normalized_variants($data,$template,$catalog,$price,$isToman) {
