@@ -5,8 +5,12 @@ Mahak desktop imported the product. Stable request IDs prevent duplicate sends.
 This flow never publishes WooCommerce products.
 """
 import asyncio
+import json
 import re
 import secrets
+import tempfile
+import uuid
+from pathlib import Path
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -14,7 +18,7 @@ from app import main as m
 from app import operations as ops
 from app.bridge_client import BridgeWooClient
 
-LABEL = '🧾 ساخت کالای جدید در محک'
+LABEL = '➕ ثبت محصول جدید'
 PERSIAN_DIGITS = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 CODE_RE = re.compile(r'^[A-Za-z0-9_-]{1,24}$')
 
@@ -32,10 +36,28 @@ def _confirm_keyboard():
 
 def _status_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('🔎 بررسی همگام‌سازی محک', callback_data='mahak:status')],
-        [InlineKeyboardButton('📸 تکمیل عکس و کپشن روی سایت', callback_data='mahakcontent:from_accounting')],
+        [InlineKeyboardButton('🔎 وضعیت محک و سایت', callback_data='mahak:status')],
         [InlineKeyboardButton('➕ کالای بعدی', callback_data='mahak:new')],
     ])
+
+
+def _photos_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('✅ عکس‌ها تمام شد', callback_data='mahak:photos_done')],
+        [InlineKeyboardButton('⏭ بدون عکس', callback_data='mahak:photos_done')],
+        [InlineKeyboardButton('❌ انصراف', callback_data='mahak:cancel')],
+    ])
+
+
+def _skip_keyboard(what):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('⏭ بدون تغییر / رد کردن', callback_data=f'mahak:{what}_skip')],
+        [InlineKeyboardButton('❌ انصراف', callback_data='mahak:cancel')],
+    ])
+
+
+_PICTURE_LOCKS = {}
+
 
 
 with m.db() as conn:
@@ -49,23 +71,37 @@ with m.db() as conn:
     )''')
     conn.execute('''CREATE INDEX IF NOT EXISTS idx_mahak_user_created
         ON mahak_product_submissions(user_id, created_at DESC)''')
+    columns = [x[1] for x in conn.execute('PRAGMA table_info(mahak_product_submissions)').fetchall()]
+    if 'data_json' not in columns:
+        conn.execute('ALTER TABLE mahak_product_submissions ADD COLUMN data_json TEXT')
 
 
 def _save_job(uid, data, status):
     with m.db() as conn:
-        conn.execute('''INSERT INTO mahak_product_submissions(request_key,user_id,code,name,status)
-            VALUES(?,?,?,?,?)
-            ON CONFLICT(request_key) DO UPDATE SET status=excluded.status''', (
+        conn.execute('''INSERT INTO mahak_product_submissions(request_key,user_id,code,name,status,data_json)
+            VALUES(?,?,?,?,?,?)
+            ON CONFLICT(request_key) DO UPDATE SET status=excluded.status,data_json=excluded.data_json''', (
             data['request_key'], uid, data['code'], data['name'], status,
+            json.dumps(data, ensure_ascii=False),
         ))
 
 
 def _last_job(uid):
     with m.db() as conn:
-        row = conn.execute('''SELECT request_key,code,name,status
+        row = conn.execute('''SELECT request_key,code,name,status,data_json
             FROM mahak_product_submissions WHERE user_id=?
             ORDER BY created_at DESC, rowid DESC LIMIT 1''', (uid,)).fetchone()
-    return dict(row) if row else None
+    if not row:
+        return None
+    data = dict(row)
+    try:
+        parsed = json.loads(data.get('data_json') or '{}')
+        if isinstance(parsed, dict):
+            parsed.update({k: data[k] for k in ('request_key','code','name','status')})
+            return parsed
+    except (ValueError, TypeError):
+        pass
+    return data
 
 
 def _status_label(result):
@@ -89,9 +125,14 @@ async def start(update, ctx=None):
     uid = update.effective_user.id
     ops.set_state(uid, 'mahak_product', 'name', {})
     await update.effective_chat.send_message(
-        '🧾 ثبت کالای جدید در حسابداری محک\n\n'
-        'این مسیر در ووکامرس کالا نمی‌سازد. ابتدا نام کالا را بفرستید.\n'
-        'در پایان، قبل از ارسال، پیش‌نمایش برای تأیید می‌بینید.',
+        '➕ ثبت محصول جدید — ربات ← محک ← سایت\n\n'
+        'فقط یک بار محصول را تعریف می‌کنی. اول در API محک ثبت می‌شود؛ '
+        'بعد از همگام‌سازی بازارا، پیش‌نویس سایت خودش ساخته می‌شود و '
+        'عکس، کپشن و وزن هم روی همان کالا قرار می‌گیرند.\n\n'
+        'فعلاً ثبت حسابداری برای *کالای ساده با موجودی اولیه صفر* تأیید شده است. '
+        'محصول دارای تنوع یا موجودی اولیه نیازمند تأیید جداگانه حسابداری است.\n\n'
+        'نام کالا را بفرست.',
+        parse_mode='Markdown',
         reply_markup=ops.cancel_menu(),
     )
 
@@ -142,7 +183,7 @@ async def check_status(uid, chat):
 
 async def maybe_text(update, ctx):
     text = (update.message.text or '').strip()
-    if text in {LABEL, '🧾 ثبت کالا در محک'}:
+    if text in {LABEL, '🧾 ثبت کالا در محک', '🧾 ساخت کالای جدید در محک'}:
         await start(update, ctx)
         return True
 
@@ -153,7 +194,7 @@ async def maybe_text(update, ctx):
 
     # Standard top-level buttons keep their existing route and discard draft.
     if text in {'⬅️ منوی اصلی', '❌ لغو عملیات',
-                '🛍 مدیریت ووکامرس', '📥 کالای محک به سایت', '📦 رهگیری شاپینو',
+                '🛍 مدیریت ووکامرس', '📦 رهگیری شاپینو',
                 '⚙️ تنظیمات و اتصال‌ها'}:
         return False
     if not await m.access(update):
@@ -213,26 +254,144 @@ async def maybe_text(update, ctx):
 
     if step == 'price':
         price = _normalize(text)
-        if not re.fullmatch(r'\d{1,14}', price):
-            await chat.send_message('قیمت ریالی باید یک عدد صحیح غیرمنفی باشد.')
+        if not re.fullmatch(r'\d{1,14}', price) or int(price) <= 0:
+            await chat.send_message('قیمت ریالی باید یک عدد صحیح مثبت باشد.')
             return True
         data['price_rial'] = price
         data['request_key'] = secrets.token_hex(16)
-        ops.update_state(uid, step='preview', data=data)
+        data['image_ids'] = []
+        data['caption'] = None
+        data['weight_grams'] = None
+        ops.update_state(uid, step='photos', data=data)
         await chat.send_message(
-            '🧾 پیش‌نمایش ثبت در محک\n\n'
-            f"نام: {data['name']}\nکد: {data['code']}\n"
-            f"الگو: {data['template_name']}\n"
-            f"دسته‌بندی: {data['category_id']}\n"
-            f"واحد: {data['unit_name']}\n"
-            f"قیمت: {int(price):,} ریال\nموجودی: ۰\n\n"
-            'پس از ارسال، نتیجه ابتدا «در انتظار همگام‌سازی» خواهد بود.',
-            reply_markup=_confirm_keyboard(),
+            '📸 حالا عکس‌های محصول را بفرست (حداکثر ۱۰ عکس).\n'
+            'عکس اول کاور خواهد شد، بقیه گالری. اگر تصویری نداری «بدون عکس» را بزن.\n\n'
+            'این عکس‌ها فعلاً در کتابخانه رسانه وردپرس نگهداری می‌شوند؛ '
+            'پس از تأیید ثبت محک، به پیش‌نویس همان محصول متصل می‌شوند.',
+            reply_markup=_photos_keyboard(),
         )
         return True
 
+    if step == 'caption':
+        if len(text)>4000 or not text.strip():
+            await chat.send_message('کپشن باید بین ۱ تا ۴۰۰۰ کاراکتر باشد.')
+            return True
+        data['caption']=text.strip()
+        ops.update_state(uid,step='weight',data=data)
+        await chat.send_message(
+            '⚖️ وزن بسته‌بندی محصول را به گرم بفرست؛ مثلاً ۱۲۰.\n'
+            'اگر وزن مشخص نیست، «رد کردن» را بزن.',
+            reply_markup=_skip_keyboard('weight'),
+        )
+        return True
+
+    if step == 'weight':
+        weight=_normalize(text).replace('٫','.')
+        if not re.fullmatch(r'\d{1,7}(?:\.\d{1,3})?',weight) or not 0 < float(weight) <= 1000000:
+            await chat.send_message('وزن را عدد مثبت به گرم بفرست، مثل ۱۵۰.')
+            return True
+        data['weight_grams']=weight
+        return await _preview(uid,chat,data)
+
     await chat.send_message('برای ادامه از دکمه‌های همین مرحله استفاده کنید.')
     return True
+
+
+
+async def maybe_photo(update, ctx):
+    if not update.message or not update.message.photo:
+        return False
+    uid=update.effective_user.id
+    state=ops.get_state(uid)
+    if not state or state.get('flow')!='mahak_product':
+        return False
+    if not await m.access(update):
+        return True
+    lock=_PICTURE_LOCKS.setdefault(uid,asyncio.Lock())
+    async with lock:
+        state=ops.get_state(uid)
+        if not state or state.get('step')!='photos':
+            await update.message.reply_text('دریافت عکس این کالا تمام شده است.')
+            return True
+        data=state['data']
+        if len(data.get('image_ids') or [])>=10:
+            await update.message.reply_text('حداکثر ۱۰ عکس برای هر کالا مجاز است.')
+            return True
+        filename='mahak_new_'+uuid.uuid4().hex+'.jpg'
+        temp=Path(tempfile.gettempdir())/filename
+        try:
+            file=await update.message.photo[-1].get_file(read_timeout=60,connect_timeout=30)
+            await file.download_to_drive(custom_path=str(temp),read_timeout=120,connect_timeout=30)
+            media=await asyncio.to_thread(BridgeWooClient().upload_media,temp,filename)
+            aid=int(media.get('id') or 0)
+            if aid<=0:raise RuntimeError('رسانه سایت شناسه معتبر برنگرداند.')
+            data.setdefault('image_ids',[]).append(aid)
+            ops.update_state(uid,data=data)
+            await update.message.reply_text(
+                f"✅ عکس {len(data['image_ids'])} دریافت شد. عکس بعدی را بفرست یا «عکس‌ها تمام شد» را بزن.",
+                reply_markup=_photos_keyboard(),
+            )
+        except Exception as exc:
+            await update.message.reply_text(f'❌ آپلود عکس ناموفق بود: {exc}')
+        finally:
+            temp.unlink(missing_ok=True)
+    return True
+
+
+async def _preview(uid,chat,data):
+    ops.update_state(uid,step='preview',data=data)
+    caption=data.get('caption')
+    weight=data.get('weight_grams')
+    await chat.send_message(
+        '🧾 پیش‌نمایش ثبت در محک و آماده‌سازی سایت\n\n'
+        f"نام: {data['name']}\nکد محک: {data['code']}\n"
+        f"الگوی دسته/واحد: {data['template_name']}\n"
+        f"قیمت محک: {int(data['price_rial']):,} ریال\n"
+        f"نوع: ساده | موجودی اولیه: ۰\n"
+        f"عکس‌ها: {len(data.get('image_ids') or [])}\n"
+        f"کپشن: {str(caption)[:330] if caption else 'بدون تغییر'}\n"
+        f"وزن: {str(weight)+' گرم' if weight is not None else 'نامشخص'}\n\n"
+        'ابتدا فقط یک درخواست ثبت در محک ارسال می‌شود. '
+        'پس از تأیید و همگام‌سازی، اطلاعات سایت به همان کالا متصل می‌شوند؛ '
+        'هیچ محصولی خودکار منتشر نمی‌شود.',
+        reply_markup=_confirm_keyboard(),
+    )
+    return True
+
+
+async def _stage_for_site(uid,data,chat):
+    payload={
+        'request_key':data['request_key'],
+        'code':data['code'],
+        'image_ids':data.get('image_ids') or [],
+    }
+    if data.get('caption') is not None:
+        payload['caption']=data['caption']
+    if data.get('weight_grams') is not None:
+        payload['weight_grams']=data['weight_grams']
+    try:
+        queued=await asyncio.to_thread(
+            BridgeWooClient().call,'mahak_content_stage',payload,
+        )
+        data['content_staged']=True
+        ops.update_state(uid,data=data)
+        _save_job(uid,data,str(data.get('mahak_status') or 'accepted_pending_sync'))
+        await chat.send_message(
+            '📤 محتوای محصول برای اتصال خودکار به پیش‌نویس سایت ثبت شد.\n'
+            f"وضعیت: {queued.get('status','queued')}\n"
+            'منتظر همگام‌سازی و تأیید شناسه محک می‌ماند؛ '
+            'عکس/کپشن/وزن را لازم نیست در مسیر دیگری وارد کنی.'
+        )
+    except Exception as exc:
+        data['content_staged']=False
+        ops.update_state(uid,data=data)
+        _save_job(uid,data,str(data.get('mahak_status') or 'accepted_pending_sync'))
+        await chat.send_message(
+            f'⚠️ محک درخواست ثبت را پذیرفته اما صف محتوای سایت تأیید نشد: {exc}\n'
+            'درخواست تازه برای همان کالا نفرست؛ از «وضعیت محک و سایت» '
+            'دوباره همین درخواست را پیگیری کن.',
+            reply_markup=_status_keyboard(),
+        )
 
 
 async def maybe_callback(update, ctx):
@@ -259,6 +418,31 @@ async def maybe_callback(update, ctx):
     if action == 'mahak:status':
         await check_status(uid, chat)
         return True
+    state=ops.get_state(uid)
+    if state and state.get('flow')=='mahak_product':
+        data=state['data']
+        if action=='mahak:photos_done' and state['step']=='photos':
+            lock=_PICTURE_LOCKS.setdefault(uid,asyncio.Lock())
+            async with lock:
+                state=ops.get_state(uid)
+                if not state or state['step']!='photos':return True
+                data=state['data']
+                ops.update_state(uid,step='caption',data=data)
+                await chat.send_message(
+                    '✍️ توضیح کوتاه / کپشن محصول را بفرست.\n'
+                    'اگر نمی‌خواهی کپشنی ثبت شود، «رد کردن» را بزن.',
+                    reply_markup=_skip_keyboard('caption'),
+                )
+            return True
+        if action=='mahak:caption_skip' and state['step']=='caption':
+            data['caption']=None
+            ops.update_state(uid,step='weight',data=data)
+            await chat.send_message('⚖️ وزن بسته‌بندی را به گرم بفرست؛ یا «رد کردن» را بزن.',
+                                    reply_markup=_skip_keyboard('weight'))
+            return True
+        if action=='mahak:weight_skip' and state['step']=='weight':
+            data['weight_grams']=None
+            return await _preview(uid,chat,data)
     if action != 'mahak:submit':
         return True
 
@@ -287,10 +471,13 @@ async def maybe_callback(update, ctx):
             reply_markup=_status_keyboard(),
         )
         return True
-    _save_job(uid, data, str(result.get('status') or 'unknown'))
+    data['mahak_status']=str(result.get('status') or 'unknown')
+    _save_job(uid, data, data['mahak_status'])
     await chat.send_message(
         f"{_status_label(result)}\n\n"
         f"کد: {data['code']}\n{result.get('note') or ''}",
         reply_markup=_status_keyboard(),
     )
+    if data['mahak_status'] in ('accepted_pending_sync','visible_in_cloud_export'):
+        await _stage_for_site(uid,data,chat)
     return True
