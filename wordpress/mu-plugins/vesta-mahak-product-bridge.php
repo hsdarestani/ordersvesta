@@ -55,6 +55,67 @@ function vmb_request_key($key) {
     return 'vmb_req_' . hash('sha256', $key);
 }
 
+
+/** Mahak stores variant identity as [{"C":"<group>","V":"<value>"}].
+ * Use only a group verified on an existing active ERP template, never invent a C ID.
+ */
+function vmb_template_variant_group($catalog,$template) {
+    $id=(int)($template['ProductId']??0);
+    $groups=[];$seen=[];
+    foreach((array)($catalog['ProductDetails']??[]) as $d) {
+        if(!is_array($d)||!empty($d['Deleted'])||(int)($d['ProductId']??0)!==$id)continue;
+        $json=$d['Properties']??null;
+        if(!$json)continue;
+        $attrs=is_string($json)?json_decode($json,true):$json;
+        if(!is_array($attrs)||count($attrs)!==1||!is_array($attrs[0]))continue;
+        $c=(string)($attrs[0]['C']??'');$v=trim((string)($attrs[0]['V']??''));
+        if(!preg_match('/^[1-9][0-9]{0,5}$/D',$c)||$v==='')continue;
+        $groups[$c][$v]=true;
+    }
+    if(count($groups)!==1)return null; // Multiple independent dimensions need a reviewed mapping.
+    $c=array_key_first($groups);
+    return ['group_code'=>$c,'sample_values'=>array_slice(array_keys($groups[$c]),0,8)];
+}
+function vmb_normalized_variants($data,$template,$catalog,$price,$isToman) {
+    $source=$data['variants']??null;
+    if($source===null||$source===[])return null;
+    if(!$isToman)throw new InvalidArgumentException('کالای متغیر باید قیمت تومانی داشته باشد.');
+    if(!is_array($source)||count($source)<2||count($source)>20)
+        throw new InvalidArgumentException('محصول متغیر باید ۲ تا ۲۰ تنوع یکتا داشته باشد.');
+    $group=vmb_template_variant_group($catalog,$template);
+    $code=trim((string)($data['variant_group_code']??''));
+    if(!$group||$code!==$group['group_code'])
+        throw new RuntimeException('گروه تنوع در کالای الگوی محک تأیید نشد. از یک محصول متغیر معتبر الگو بگیر.');
+    $attribute=trim((string)($data['attribute_name']??''));
+    if($attribute===''||mb_strlen($attribute)>60)
+        throw new InvalidArgumentException('نام ویژگی محصول (مثلاً رنگ یا سایز) نامعتبر است.');
+    $seen=[];$result=[];
+    foreach($source as $v){
+        if(!is_array($v))throw new InvalidArgumentException('ساختار تنوع نامعتبر است.');
+        $name=sanitize_text_field(trim((string)($v['option']??'')));
+        $amount=trim((string)($v['price_toman']??''));
+        $stock=trim((string)($v['stock_qty']??''));
+        if(mb_strlen($name)<1||mb_strlen($name)>70 ||
+           preg_match('/[<>\[\]{}]/u',$name))
+            throw new InvalidArgumentException('مقدار رنگ/مدل نامعتبر است.');
+        $norm=mb_strtolower(preg_replace('/\s+/u',' ',trim($name)),'UTF-8');
+        if(isset($seen[$norm]))throw new InvalidArgumentException('دو تنوع با نام یکسان ثبت شده‌اند.');
+        $seen[$norm]=true;
+        if(!preg_match('/^[1-9][0-9]{0,13}$/D',$amount))
+            throw new InvalidArgumentException('قیمت هر تنوع باید عدد تومانی مثبت باشد.');
+        if(!preg_match('/^(?:0|[1-9][0-9]{0,6})$/D',$stock))
+            throw new InvalidArgumentException('موجودی هر تنوع باید عدد صحیح صفر تا ۹۹۹۹۹۹۹ باشد.');
+        $result[]=['option'=>$name,'price_toman'=>$amount,'stock_qty'=>$stock];
+    }
+    return [
+       'attribute_name'=>$attribute,'group_code'=>$code,
+       'variants'=>$result
+    ];
+}
+function vmb_client_id($request,$suffix,$floor,$span) {
+    return (int)($floor+(hexdec(substr(hash('sha256',$request.':'.$suffix),0,7))%$span));
+}
+
 function vmb_template($data) {
     $code = trim((string) ($data['template_code'] ?? ''));
     if (!preg_match('/^[0-9A-Za-z_-]{1,24}$/D', $code)) {
@@ -69,6 +130,7 @@ function vmb_template($data) {
         'category_id' => (int) ($p['ProductCategoryId'] ?? 0),
         'unit_name' => (string) ($p['UnitName'] ?? 'عدد'),
         'unit_name2' => (string) ($p['UnitName2'] ?? 'عدد'),
+        'variation_template' => vmb_template_variant_group($catalog,$p),
     );
 }
 
@@ -79,6 +141,9 @@ function vmb_public_state($record) {
         'name' => (string) ($record['name'] ?? ''),
         'accepted_at' => (string) ($record['accepted_at'] ?? ''),
         'note' => (string) ($record['note'] ?? ''),
+        'is_variable'=>is_array($record['variant_spec']??null),
+        'variant_count'=>count((array)($record['variant_spec']['variants']??[])),
+        'stock_intent_status'=>(string)($record['stock_intent_status']??'unknown'),
     );
 }
 
@@ -88,12 +153,41 @@ function vmb_status($data) {
     if (!is_array($record)) {
         return array('status' => 'not_submitted');
     }
-    if (in_array($record['status'] ?? '', array('accepted_pending_sync','visible_in_cloud_export','unknown'), true)) {
+    if (in_array($record['status'] ?? '', array('accepted_pending_sync','visible_in_cloud_export','unknown','details_unverified'), true)) {
         $catalog = vmb_catalog(vmb_api());
         $product = vmb_by_code($catalog, $record['code']);
         if ($product && (string) ($product['Name'] ?? '') === $record['name']) {
-            $record['status'] = 'visible_in_cloud_export';
-            $record['mahak_product_id'] = (int) ($product['ProductId'] ?? 0);
+            $id=(int)($product['ProductId']??0);
+            $details=[];
+            foreach((array)($catalog['ProductDetails']??[]) as $d)
+                if(is_array($d)&&empty($d['Deleted'])&&(int)($d['ProductId']??0)===$id)
+                    $details[]=$d;
+            $expected=$record['variant_spec']??null;
+            $complete=true;
+            if(is_array($expected)){
+                $children=[];
+                foreach($details as $d) {
+                    $attrs=is_string($d['Properties']??null)?json_decode($d['Properties'],true):null;
+                    if(!is_array($attrs)||count($attrs)!==1)continue;
+                    $row=$attrs[0];
+                    if((string)($row['C']??'')!==(string)$expected['group_code'])continue;
+                    $value=trim((string)($row['V']??''));
+                    if(isset($children[$value])){$complete=false;break;}
+                    $children[$value]=(int)($d['Price1']??-1);
+                }
+                if(count($children)!==count($expected['variants']))$complete=false;
+                foreach($expected['variants'] as $v)
+                   if(!isset($children[$v['option']]) ||
+                      $children[$v['option']]!==(int)$v['price_toman'])$complete=false;
+            }else{
+                if(count($details)!==1|| (int)($details[0]['Price1']??-1)!==(int)($record['price']??-1))
+                   $complete=false;
+            }
+            $record['status']=$complete?'visible_in_cloud_export':'details_unverified';
+            $record['mahak_product_id']=$id;
+            $record['note']=$complete?
+                'کالا و جزئیات قیمت/تنوع در محک ابری بازخوانی و تأیید شد.':
+                'کالا در ابر موجود است اما جزئیات یا قیمت همه تنوع‌ها هنوز تطبیق ندارند؛ انتشار و اتصال متوقف است.';
             update_option($key, $record, false);
         }
     }
@@ -130,11 +224,20 @@ function vmb_submit($data) {
         throw new InvalidArgumentException('کد کالا یا کد الگو نامعتبر یا تکراری است.');
     }
     if (!preg_match('/^\d{1,14}$/D', $price)) {
-        throw new InvalidArgumentException('قیمت باید عدد صحیح غیرمنفی به ریال باشد.');
+        throw new InvalidArgumentException('قیمت باید یک عدد صحیح به واحد انتخاب‌شده باشد.');
     }
+    // Preserve exact payload fingerprint across retries of the one-time Mahak write.
+    $hash=hash('sha256',wp_json_encode([
+       'name'=>$name,'code'=>$code,'template'=>$template_code,
+       'price'=>$price,'currency'=>$isToman?'toman':'legacy_rial',
+       'group'=>$data['variant_group_code']??null,
+       'attribute'=>$data['attribute_name']??null,
+       'variants'=>$data['variants']??null,
+    ],JSON_UNESCAPED_UNICODE));
     $previous = get_option($request_key, null);
     if (is_array($previous)) {
-        if ((string) ($previous['code'] ?? '') !== $code) {
+        if ((string) ($previous['code'] ?? '') !== $code ||
+            (isset($previous['payload_hash']) && $previous['payload_hash']!==$hash)) {
             throw new RuntimeException('این شناسه درخواست قبلاً برای کالای دیگری استفاده شده است.');
         }
         return vmb_status(array('request_key' => $request_id));
@@ -146,6 +249,17 @@ function vmb_submit($data) {
     }
     $template = vmb_by_code($catalog, $template_code);
     if (!$template) { throw new RuntimeException('کالای الگو در کاتالوگ محک وجود ندارد.'); }
+    $variantSpec=vmb_normalized_variants($data,$template,$catalog,$price,$isToman);
+    if($variantSpec===null && !empty($data['variant_group_code']))
+        throw new InvalidArgumentException('نوع محصول متغیر است اما هیچ تنوعی ارسال نشده.');
+    // Stock requested by the operator is an *intent* only. Count1 does not
+    // represent real Mahak warehouse stock: only a valid warehouse document
+    // can create that. Never fake inventory in SaveAllData ProductDetails.
+    $simpleStock=trim((string)($data['stock_qty']??'0'));
+    if(!preg_match('/^(?:0|[1-9][0-9]{0,6})$/D',$simpleStock))
+        throw new InvalidArgumentException('موجودی درخواست‌شده معتبر نیست.');
+    if($variantSpec!==null && (int)$simpleStock!==0)
+        throw new InvalidArgumentException('موجودی محصول متغیر باید در ردیف هر تنوع باشد.');
 
     // Permanent code reservation: a timeout MUST NOT cause an automatic resubmit
     // while the desktop accounting software may be importing the first request.
@@ -159,6 +273,12 @@ function vmb_submit($data) {
         'name' => $name,
         'template_code' => $template_code,
         'price_unit' => $isToman ? 'toman' : 'legacy_rial',
+        'price'=>(int)$price,
+        'payload_hash'=>$hash,
+        'variant_spec'=>$variantSpec,
+        'requested_stock_qty'=>$variantSpec===null?(int)$simpleStock:null,
+        'stock_intent_status'=>$variantSpec!==null?
+             'warehouse_document_required':((int)$simpleStock>0?'warehouse_document_required':'none'),
         'requested_at' => gmdate('c'),
     );
     if (!add_option($request_key, $record, '', false)) {
@@ -166,7 +286,7 @@ function vmb_submit($data) {
     }
 
     $cid = 1100000000 + (hexdec(substr(hash('sha256', $request_id . ':p'), 0, 7)) % 500000000);
-    $did = 1600000000 + (hexdec(substr(hash('sha256', $request_id . ':d'), 0, 7)) % 400000000);
+    $did = vmb_client_id($request_id,'d',1600000000,400000000);
     $unit = (string) ($template['UnitName'] ?? 'عدد');
     $unit2 = (string) ($template['UnitName2'] ?? $unit);
     $product = array(
@@ -179,9 +299,9 @@ function vmb_submit($data) {
         'description' => 'Created from Liora Telegram bot; pending Mahak desktop sync',
         'deleted' => false,
     );
-    $details = array(
+    $base = array(
         'productDetailId' => 0, 'productDetailClientId' => (int) $did,
-        'productDetailCode' => 1, 'productId' => 0,
+        'productDetailCode' => $variantSpec===null?1:0, 'productId' => 0,
         'productClientId' => (int) $cid, 'productCode' => $code,
         'properties' => '', 'properties2' => '',
         'count1' => 0, 'count2' => 0,
@@ -189,10 +309,30 @@ function vmb_submit($data) {
         'defaultSellPriceLevel' => 1, 'defaultDiscountLevel' => 1,
         'deleted' => false,
     );
+    $details = [$base];
+    if($variantSpec!==null){
+        $usedIds=[(int)$did=>true];
+        foreach($variantSpec['variants'] as $i=>$v){
+            $childId=vmb_client_id($request_id,'v'.$i,1600000000,400000000);
+            if(isset($usedIds[$childId]))throw new RuntimeException('تعارض شناسه ردیف‌های تنوع؛ ثبت متوقف شد.');
+            $usedIds[$childId]=true;
+            $row=$base;
+            $row['productDetailClientId']=$childId;
+            $row['productDetailCode']=1000+$i;
+            $row['properties']=wp_json_encode([
+                ['C'=>(string)$variantSpec['group_code'],'V'=>$v['option']]
+            ],JSON_UNESCAPED_UNICODE);
+            $row['price1']=(int)$v['price_toman'];
+            // Initial stock NOT written to Count1; separate valid ERP
+            // warehouse document is required. Avoid false stock postings.
+            $row['count1']=0;
+            $details[]=$row;
+        }
+    }
     try {
         $raw = $api->set_all_data('', array(
             'products' => array($product),
-            'productDetails' => array($details),
+            'productDetails' => $details,
         ));
         $res = is_string($raw) ? json_decode($raw, true) : $raw;
         if (!is_array($res) || empty($res['success'])) {
@@ -209,7 +349,10 @@ function vmb_submit($data) {
         }
         $record['status'] = 'accepted_pending_sync';
         $record['accepted_at'] = gmdate('c');
-        $record['note'] = 'توسط API پذیرفته شد؛ ورود به محک ویندوزی هنوز تأیید نشده است.';
+        $record['note'] = 'کالا'.($variantSpec!==null?' با '.count($variantSpec['variants']).' تنوع':'').
+          ' برای ثبت در محک پذیرفته شد؛ تأیید ابر و دریافت ویندوزی جداگانه است.'.
+          ($record['stock_intent_status']==='warehouse_document_required'?
+          ' موجودی در صف درخواست ثبت سند انبار است و هنوز موجودی واقعی محک محسوب نمی‌شود.':'');
         update_option($request_key, $record, false);
         return vmb_public_state($record);
     } catch (Throwable $e) {
