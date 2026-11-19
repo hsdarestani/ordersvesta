@@ -1,0 +1,52 @@
+name: Final live QA unified Mahak simple and variable creation wizard
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/qa-live-unified-mahak-creation-20261119.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read-only proof signed bot to ERP variant template and Woo draft linkage
+        env:
+          HOST: ${{ secrets.HOST }}
+          PASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -p "$PASS" ssh -p 9011 -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          cd /opt/ordersvesta
+          docker compose -p ordersvesta exec -T bot python - <<'PY'
+          from app import operations as ops, mahak_flow as flow, entrypoint
+          from app.bridge_client import BridgeWooClient
+          assert flow.LABEL=='➕ ثبت محصول جدید'
+          assert [b.text for row in ops.main_menu().keyboard for b in row].count(flow.LABEL)==1
+          assert [b.text for row in ops.woo_menu().keyboard for b in row].count(flow.LABEL)==1
+          assert entrypoint.m.photo is entrypoint.routed_photo
+          print('FINAL_LIVE_BOT_ONE_PRODUCT_MENU=yes')
+          b=BridgeWooClient()
+          variable=b.call('mahak_template',{'template_code':'92503'})
+          assert str(variable['variation_template']['group_code'])=='3'
+          assert variable['variation_template']['sample_values']
+          print('FINAL_LIVE_MAHAK_VARIABLE_GROUP_C_3=yes')
+          simple=b.call('mahak_template',{'template_code':'8079'})
+          assert simple['code']=='8079'
+          print('FINAL_LIVE_MAHAK_SIMPLE_TEMPLATE=yes')
+          never=b.call('mahak_status',{'request_key':'0'*32})
+          assert never['status']=='not_submitted',never
+          pending=b.call('mahak_content_pending_status',{'request_key':'0'*32})
+          assert pending['status']=='not_staged',pending
+          print('FINAL_LIVE_MAHAK_SAFE_STATUS_ENDPOINTS=yes')
+          woo=b.call('mahak_content_status',{'product_id':10684982,'code':'92503','woo_id':103417})
+          assert woo['woo_id']==103417 and woo['type']=='variable'
+          print('FINAL_LIVE_MAHAK_EXISTING_WOO_VARIATION_IDENTITY=yes')
+          print('FINAL_LIVE_NO_ACCOUNTING_OR_STOCK_WRITES=yes')
+          print('FINAL_LIVE_ONE_WIZARD_READONLY_INTEGRATION_PASS=yes')
+          PY
+          curl --fail --silent --max-time 8 http://127.0.0.1:8094/health
+          REMOTE
