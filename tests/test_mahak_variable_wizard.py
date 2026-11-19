@@ -78,7 +78,7 @@ class MahakVariableWizardTests(unittest.TestCase):
             preview=chat.messages[-1]
             self.assertIn('صورتی',preview)
             self.assertIn('نود',preview)
-            self.assertIn('۱۱۰٬۰۰۰',preview)
+            self.assertIn('110,000',preview)
             self.assertIn('موجودی درخواست‌شده 12',preview)
             self.assertIn('سند انبار',preview)
 
