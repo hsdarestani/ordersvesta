@@ -348,6 +348,27 @@ async def maybe_callback(update, ctx):
     await q.answer()
     uid = q.from_user.id
     chat = q.message.chat
+    if action == 'mahakcontent:from_accounting':
+        from app import mahak_flow
+        job = mahak_flow._last_job(uid)
+        code = str((job or {}).get('code') or '')
+        if not code:
+            await chat.send_message('هنوز کالایی از مسیر ثبت در محک برای این حساب ثبت نشده.')
+            return True
+        try:
+            results = await asyncio.to_thread(
+                BridgeWooClient().call, 'mahak_site_search', {'query': code},
+            )
+            items = [row for row in (results.get('items') or []) if str(row.get('code')) == code]
+        except Exception as exc:
+            await chat.send_message(f'بررسی محصول محک ناموفق بود: {exc}')
+            return True
+        if len(items) != 1:
+            await chat.send_message('کالای جدید هنوز با شناسه یکتا در خروجی محک پیدا نشده. '
+                                    'ابتدا همگام‌سازی بازارا را کامل کن.')
+            return True
+        await _begin_selected(uid, chat, items[0])
+        return True
     state = ops.get_state(uid)
     step = state['step'] if state and state['flow']==FLOW else None
 
