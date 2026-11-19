@@ -41,6 +41,23 @@ def _status_keyboard():
     ])
 
 
+def _type_keyboard(variable_available):
+    rows=[[InlineKeyboardButton('📦 کالای ساده',callback_data='mahak:type:simple')]]
+    if variable_available:
+        rows.append([InlineKeyboardButton('🎨 دارای رنگ / مدل / سایز',callback_data='mahak:type:variable')])
+    rows.append([InlineKeyboardButton('❌ انصراف',callback_data='mahak:cancel')])
+    return InlineKeyboardMarkup(rows)
+
+
+def _mode_keyboard(kind):
+    label='قیمت' if kind=='price' else 'موجودی'
+    return InlineKeyboardMarkup([
+       [InlineKeyboardButton(f'✅ {label} همه یکسان',callback_data=f'mahak:{kind}:same')],
+       [InlineKeyboardButton(f'🔢 {label} جداگانه',callback_data=f'mahak:{kind}:each')],
+       [InlineKeyboardButton('❌ انصراف',callback_data='mahak:cancel')],
+    ])
+
+
 def _photos_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton('✅ عکس‌ها تمام شد', callback_data='mahak:photos_done')],
@@ -129,8 +146,9 @@ async def start(update, ctx=None):
         'فقط یک بار محصول را تعریف می‌کنی. اول در API محک ثبت می‌شود؛ '
         'بعد از همگام‌سازی بازارا، پیش‌نویس سایت خودش ساخته می‌شود و '
         'عکس، کپشن و وزن هم روی همان کالا قرار می‌گیرند.\n\n'
-        'فعلاً ثبت حسابداری برای *کالای ساده با موجودی اولیه صفر* تأیید شده است. '
-        'محصول دارای تنوع یا موجودی اولیه نیازمند تأیید جداگانه حسابداری است.\n\n'
+        'برای محصول ساده یا دارای رنگ/مدل می‌تونی قیمت و موجودی هر تنوع را مشخص کنی. '
+        'ثبت موجودی واقعی در انبار محک نیاز به سند انبار دارد؛ '
+        'تا ثبت سند تأیید نشود، موجودی در وضعیت «در انتظار حسابداری» خواهد ماند.\n\n'
         'نام کالا را بفرست.',
         parse_mode='Markdown',
         reply_markup=ops.cancel_menu(),
@@ -264,14 +282,16 @@ async def maybe_text(update, ctx):
         data['template_name'] = template.get('name', '')
         data['category_id'] = template.get('category_id')
         data['unit_name'] = template.get('unit_name')
-        ops.update_state(uid, step='price', data=data)
+        data['variation_template'] = template.get('variation_template')
+        ops.update_state(uid, step='type', data=data)
+        var=data['variation_template']
         await chat.send_message(
             f"الگو: {data['template_name']}\n"
-            f"شناسه دسته‌بندی: {data['category_id']}\n"
-            f"واحد: {data['unit_name']}\n\n"
-            "قیمت فروش کالای جدید را به **تومان** وارد کنید (فقط عدد).\n"
-            "موجودی اولیه برای جلوگیری از ایجاد سند انبار، صفر خواهد بود.",
-            parse_mode='Markdown',
+            f"دسته‌بندی: {data['category_id']} | واحد: {data['unit_name']}\n\n"
+            "نوع محصول جدید را انتخاب کن.\n"
+            + (f"الگوی تنوع این کالا: {', '.join(var.get('sample_values') or [])}"
+               if var else "برای محصول متغیر، یک کالای الگوی دارای تنوع معتبر انتخاب کن."),
+            reply_markup=_type_keyboard(bool(var)),
         )
         return True
 
@@ -281,19 +301,97 @@ async def maybe_text(update, ctx):
             await chat.send_message('قیمت تومانی باید یک عدد صحیح مثبت باشد.')
             return True
         data['price_toman'] = price
-        data['request_key'] = secrets.token_hex(16)
-        data['image_ids'] = []
-        data['caption'] = None
-        data['weight_grams'] = None
-        ops.update_state(uid, step='photos', data=data)
+        ops.update_state(uid,step='simple_stock',data=data)
         await chat.send_message(
-            '📸 حالا عکس‌های محصول را بفرست (حداکثر ۱۰ عکس).\n'
-            'عکس اول کاور خواهد شد، بقیه گالری. اگر تصویری نداری «بدون عکس» را بزن.\n\n'
-            'این عکس‌ها فعلاً در کتابخانه رسانه وردپرس نگهداری می‌شوند؛ '
-            'پس از تأیید ثبت محک، به پیش‌نویس همان محصول متصل می‌شوند.',
-            reply_markup=_photos_keyboard(),
+            '📦 موجودی اولیه این کالا چند عدد است؟ (مثلاً ۲۴ یا ۰)\n'
+            'توجه: این تعداد به‌عنوان درخواست موجودی ثبت می‌شود؛ '
+            'تا زمانی که سند انبار محک تأیید نشده، موجودی واقعی به سایت تحمیل نمی‌شود.'
         )
         return True
+    if step=='simple_stock':
+        qty=_normalize(text)
+        if not re.fullmatch(r'(?:0|[1-9][0-9]{0,6})',qty):
+            await chat.send_message('تعداد باید عدد صحیح بین صفر و ۹۹۹۹۹۹۹ باشد.')
+            return True
+        data['stock_qty']=qty
+        return await _start_photos(uid,chat,data)
+
+    if step=='attribute_name':
+        label=text.strip()
+        if len(label)<2 or len(label)>60:
+            await chat.send_message('نام ویژگی باید ۲ تا ۶۰ نویسه باشد؛ مثلاً رنگ، سایز، مدل.')
+            return True
+        data['attribute_name']=label
+        ops.update_state(uid,step='var_options',data=data)
+        await chat.send_message(
+            f"مقادیر «{label}» رو با ویرگول یا هر کدوم در یک خط بفرست.\n"
+            "مثال: صورتی، کالباسی، نود\nحداقل ۲ و حداکثر ۲۰ مقدار."
+        )
+        return True
+
+    if step=='var_options':
+        options=[x.strip() for x in text.replace('،',',').replace('\n',',').split(',')]
+        options=[x for x in options if x]
+        keys=[x.replace('ي','ی').replace('ك','ک').casefold() for x in options]
+        if (len(options)<2 or len(options)>20 or
+            len(set(keys))!=len(options) or any(len(o)>70 for o in options)):
+            await chat.send_message('۲ تا ۲۰ مقدار غیرتکراری و کوتاه لازم است.')
+            return True
+        data['variants']=[{'option':o,'price_toman':'','stock_qty':''} for o in options]
+        ops.update_state(uid,step='var_price_mode',data=data)
+        await chat.send_message(
+            '💰 قیمت هر تنوع به تومان است. همه یک قیمت دارند یا جداگانه؟',
+            reply_markup=_mode_keyboard('price'),
+        )
+        return True
+    if step=='var_price_common':
+        value=_normalize(text)
+        if not re.fullmatch(r'[1-9][0-9]{0,13}',value):
+            await chat.send_message('قیمت معتبر و مثبت به تومان بفرست.')
+            return True
+        for v in data['variants']:
+            v['price_toman']=value
+        return await _start_variant_stock(uid,chat,data)
+    if step=='var_price_each':
+        index=int(data.get('variant_index',0))
+        variants=data['variants']
+        if index>=len(variants):
+            return await _start_variant_stock(uid,chat,data)
+        value=_normalize(text)
+        if not re.fullmatch(r'[1-9][0-9]{0,13}',value):
+            await chat.send_message('قیمت معتبر و مثبت به تومان بفرست.')
+            return True
+        variants[index]['price_toman']=value
+        index+=1
+        data['variant_index']=index
+        if index<len(variants):
+            ops.update_state(uid,data=data)
+            await chat.send_message(f"قیمت «{variants[index]['option']}» را به تومان بفرست.")
+            return True
+        return await _start_variant_stock(uid,chat,data)
+    if step=='var_stock_common':
+        qty=_normalize(text)
+        if not re.fullmatch(r'(?:0|[1-9][0-9]{0,6})',qty):
+            await chat.send_message('موجودی باید عدد صحیح ۰ تا ۹۹۹۹۹۹۹ باشد.')
+            return True
+        for v in data['variants']:v['stock_qty']=qty
+        return await _start_photos(uid,chat,data)
+    if step=='var_stock_each':
+        index=int(data.get('variant_index',0))
+        variants=data['variants']
+        if index>=len(variants):return await _start_photos(uid,chat,data)
+        qty=_normalize(text)
+        if not re.fullmatch(r'(?:0|[1-9][0-9]{0,6})',qty):
+            await chat.send_message('موجودی باید عدد صحیح ۰ تا ۹۹۹۹۹۹۹ باشد.')
+            return True
+        variants[index]['stock_qty']=qty
+        index+=1
+        data['variant_index']=index
+        if index<len(variants):
+            ops.update_state(uid,data=data)
+            await chat.send_message(f"موجودی «{variants[index]['option']}» چند عدد است؟")
+            return True
+        return await _start_photos(uid,chat,data)
 
     if step == 'caption':
         if len(text)>4000 or not text.strip():
@@ -319,6 +417,36 @@ async def maybe_text(update, ctx):
     await chat.send_message('برای ادامه از دکمه‌های همین مرحله استفاده کنید.')
     return True
 
+
+
+async def _start_photos(uid,chat,data):
+    data['request_key']=data.get('request_key') or secrets.token_hex(16)
+    data['image_ids']=[]
+    data['caption']=None
+    data['weight_grams']=None
+    if data.get('variants'):
+        data['price_toman']=str(min(int(v['price_toman']) for v in data['variants']))
+        data['stock_qty']='0'
+        data['variant_group_code']=str((data.get('variation_template') or {})['group_code'])
+    ops.update_state(uid,step='photos',data=data)
+    await chat.send_message(
+        '📸 عکس‌های محصول را بفرست (حداکثر ۱۰ تصویر).\n'
+        'اولی کاور می‌شود و بقیه گالری. یا «بدون عکس» را بزن.\n'
+        'محتوا بعد از تأیید شناسه محک، روی همان پیش‌نویس سایت می‌نشیند.',
+        reply_markup=_photos_keyboard(),
+    )
+    return True
+
+
+async def _start_variant_stock(uid,chat,data):
+    data['variant_index']=0
+    ops.update_state(uid,step='var_stock_mode',data=data)
+    await chat.send_message(
+        '📦 موجودی هر تنوع را مشخص کن؛ مقدارها برای ثبت سند انبار '
+        'درخواست می‌شوند، نه به‌عنوان موجودی تأییدشده.',
+        reply_markup=_mode_keyboard('stock'),
+    )
+    return True
 
 
 async def maybe_photo(update, ctx):
@@ -365,18 +493,25 @@ async def _preview(uid,chat,data):
     ops.update_state(uid,step='preview',data=data)
     caption=data.get('caption')
     weight=data.get('weight_grams')
+    variants=data.get('variants') or []
+    variant_lines=''.join(
+        f"• {v['option']}: {int(v['price_toman']):,} تومان | موجودی درخواست‌شده {v['stock_qty']}\n"
+        for v in variants
+    )
+    stock_line=('\n'+variant_lines if variants
+         else f"موجودی اولیه درخواستی: {data.get('stock_qty','0')}\n")
     await chat.send_message(
         '🧾 پیش‌نمایش ثبت در محک و آماده‌سازی سایت\n\n'
         f"نام: {data['name']}\nکد محک: {data['code']}\n"
         f"الگوی دسته/واحد: {data['template_name']}\n"
         f"قیمت محک: {int(data['price_toman']):,} تومان\n"
-        f"نوع: ساده | موجودی اولیه: ۰\n"
+        f"نوع: {'متغیر' if variants else 'ساده'} | "+stock_line+""
         f"عکس‌ها: {len(data.get('image_ids') or [])}\n"
         f"کپشن: {str(caption)[:330] if caption else 'بدون تغییر'}\n"
         f"وزن: {str(weight)+' گرم' if weight is not None else 'نامشخص'}\n\n"
         'ابتدا فقط یک درخواست ثبت در محک ارسال می‌شود. '
         'پس از تأیید و همگام‌سازی، اطلاعات سایت به همان کالا متصل می‌شوند؛ '
-        'هیچ محصولی خودکار منتشر نمی‌شود.',
+        'هیچ محصولی خودکار منتشر نمی‌شود. موجودی درخواستی تا تأیید سند انبار، موجودی واقعی نیست.',
         reply_markup=_confirm_keyboard(),
     )
     return True
@@ -444,6 +579,44 @@ async def maybe_callback(update, ctx):
     state=ops.get_state(uid)
     if state and state.get('flow')=='mahak_product':
         data=state['data']
+        if action.startswith('mahak:type:') and state['step']=='type':
+            choice=action.rsplit(':',1)[-1]
+            if choice=='simple':
+                data['type']='simple'
+                ops.update_state(uid,step='price',data=data)
+                await chat.send_message('💰 قیمت فروش این کالا را به تومان بفرست.')
+                return True
+            if choice=='variable' and data.get('variation_template'):
+                data['type']='variable'
+                ops.update_state(uid,step='attribute_name',data=data)
+                await chat.send_message('نام ویژگی را بفرست؛ مثلاً رنگ، مدل یا سایز.')
+                return True
+            await chat.send_message('برای تنوع باید کالای الگوی دارای گروه ویژگی معتبر انتخاب شود.')
+            return True
+        if action.startswith('mahak:price:') and state['step']=='var_price_mode':
+            mode=action.rsplit(':',1)[-1]
+            data['variant_index']=0
+            if mode=='same':
+                ops.update_state(uid,step='var_price_common',data=data)
+                await chat.send_message('قیمت مشترک همه تنوع‌ها را به تومان بفرست.')
+                return True
+            if mode=='each':
+                ops.update_state(uid,step='var_price_each',data=data)
+                await chat.send_message(f"قیمت «{data['variants'][0]['option']}» را به تومان بفرست.")
+                return True
+        if action.startswith('mahak:stock:') and state['step']=='var_stock_mode':
+            mode=action.rsplit(':',1)[-1]
+            data['variant_index']=0
+            if mode=='same':
+                ops.update_state(uid,step='var_stock_common',data=data)
+                await chat.send_message('موجودی اولیه درخواستی مشترک همه تنوع‌ها چند عدد است؟')
+                return True
+            if mode=='each':
+                ops.update_state(uid,step='var_stock_each',data=data)
+                await chat.send_message(f"موجودی اولیه «{data['variants'][0]['option']}» چند عدد است؟")
+                return True
+    if state and state.get('flow')=='mahak_product':
+        data=state['data']
         if action=='mahak:photos_done' and state['step']=='photos':
             lock=_PICTURE_LOCKS.setdefault(uid,asyncio.Lock())
             async with lock:
@@ -484,7 +657,10 @@ async def maybe_callback(update, ctx):
     try:
         result = await asyncio.to_thread(
             BridgeWooClient().call, 'mahak_submit',
-            {k: data[k] for k in ('request_key', 'name', 'code', 'template_code', 'price_toman')},
+            {k: data[k] for k in ('request_key', 'name', 'code', 'template_code', 'price_toman')}
+            | ({'variants':data['variants'],'attribute_name':data['attribute_name'],
+                'variant_group_code':data['variant_group_code'],'stock_qty':'0'}
+               if data.get('variants') else {'stock_qty':data.get('stock_qty','0')}),
         )
     except Exception as exc:
         # Do not create a new request_key; the same operation must be reconciled.
