@@ -147,6 +147,57 @@ function vmb_public_state($record) {
     );
 }
 
+
+/** Observe real Bazaar warehouse assets after desktop F2. NEVER create stock
+ * from ProductDetail.Count1, which is not physical inventory in this account.
+ */
+function vmb_requested_inventory_status($record,$catalog) {
+    global $wpdb;
+    if(($record['stock_intent_status']??'none')==='none')
+        return ['status'=>'none','requested_total'=>0];
+    $id=(int)($record['mahak_product_id']??0);
+    if(!$id)return ['status'=>'warehouse_document_required','requested_total'=>null];
+    $spec=$record['variant_spec']??null;$requested=[];
+    if(is_array($spec)){
+        foreach($spec['variants'] as $v) {
+            $requested[trim((string)$v['option'])]=(int)$v['stock_qty'];
+        }
+    }else $requested['__simple__']=(int)($record['requested_stock_qty']??0);
+    $amount=array_sum($requested);
+    if($amount<=0)return ['status'=>'none','requested_total'=>0];
+    if(!isset($wpdb)||!is_object($wpdb))
+        return ['status'=>'warehouse_document_required','requested_total'=>$amount];
+    $assetsTable=$wpdb->prefix.'bazara_product_assets';
+    $matched=0;$found=[];
+    foreach((array)($catalog['ProductDetails']??[]) as $d){
+        if(!is_array($d)||!empty($d['Deleted'])||(int)($d['ProductId']??0)!==$id)continue;
+        $label='__simple__';
+        if(is_array($spec)){
+            $props=is_string($d['Properties']??null)?json_decode($d['Properties'],true):null;
+            if(!is_array($props)||count($props)!==1 ||
+               (string)($props[0]['C']??'')!==(string)$spec['group_code'])continue;
+            $label=trim((string)($props[0]['V']??''));
+        }
+        if(!array_key_exists($label,$requested)||isset($found[$label]))continue;
+        $detail=(int)($d['ProductDetailId']??0);
+        if(!$detail)continue;
+        $rows=$wpdb->get_results($wpdb->prepare(
+           "SELECT StoreId,Count1 FROM {$assetsTable} WHERE ProductDetailId=%d AND Deleted=0 LIMIT 2",
+           $detail),ARRAY_A);
+        if(count($rows)!==1 || (int)$rows[0]['StoreId']<=0 ||
+           !is_numeric($rows[0]['Count1']))continue;
+        $found[$label]=true;
+        if(abs((float)$rows[0]['Count1']-$requested[$label])<0.0001)$matched++;
+    }
+    return [
+        'status'=>$matched===count($requested)?
+             'warehouse_quantity_verified':'warehouse_document_required',
+        'requested_total'=>$amount,
+        'matched_variants'=>$matched,
+        'total_variants'=>count($requested),
+    ];
+}
+
 function vmb_status($data) {
     $key = vmb_request_key((string) ($data['request_key'] ?? ''));
     $record = get_option($key, null);
@@ -194,6 +245,11 @@ function vmb_status($data) {
         }
     }
     $state = vmb_public_state($record);
+    if(($record['status']??'')==='visible_in_cloud_export' &&
+       ($record['stock_intent_status']??'none')==='warehouse_document_required'){
+        $state['warehouse']=vmb_requested_inventory_status($record,$catalog??[]);
+        $state['stock_intent_status']=$state['warehouse']['status'];
+    }
     if (!empty($record['mahak_product_id'])) {
         $state['mahak_product_id'] = (int) $record['mahak_product_id'];
     }
