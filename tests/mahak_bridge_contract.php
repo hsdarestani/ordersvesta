@@ -10,6 +10,7 @@ $GLOBALS['save_count'] = 0;
 $GLOBALS['catalog_read_count'] = 0;
 $GLOBALS['catalog_transient_failures'] = 1;
 $GLOBALS['outbound'] = null;
+$GLOBALS['options']['bazara_visitor_settings'] = array('selectCurrencySoftware'=>'toman','selectCurrencyPlugin'=>'toman');
 function add_action($hook,$callback,$priority=10) {}
 function sanitize_text_field($v) { return trim(strip_tags($v)); }
 function get_option($key,$default=null) { return $GLOBALS['options'][$key] ?? $default; }
@@ -72,4 +73,22 @@ $confirmed=vmb_status(array('request_key'=>$payload['request_key']));
 assert_true($confirmed['status']==='visible_in_cloud_export','Readback did not update state');
 assert_true($confirmed['mahak_product_id']===99989998,'Mahak ID mismatch');
 assert_true($GLOBALS['save_count']===1,'Readback must be read-only');
+// New unified bot path: Toman must match both Bazara and Woo settings.
+$toman = array('request_key'=>'2b35c05f574a4bc79c246a8a3a9d317cd',
+    'name'=>'LIORA NEW TOMAN PRODUCT','code'=>'998814',
+    'template_code'=>'8079','price_toman'=>'2599000');
+$res=vmb_submit($toman);
+assert_true($res['status']==='accepted_pending_sync','Toman workflow not accepted');
+assert_true($GLOBALS['outbound']['productDetails'][0]['price1']===2599000,
+    'Toman amount changed before Mahak SaveAllData');
+assert_true($GLOBALS['options']['vmb_req_'.hash('sha256',$toman['request_key'])]['price_unit']==='toman',
+    'Toman unit not recorded');
+$GLOBALS['options']['bazara_visitor_settings']['selectCurrencyPlugin']='rial';
+try {
+    $failed=$toman;$failed['request_key']='ae129c3392a44a5491d6b705abb81754';$failed['code']='998815';
+    vmb_submit($failed);
+    throw new RuntimeException('Currency mismatch wrongly allowed');
+} catch (RuntimeException $exc) {
+    assert_true(strpos($exc->getMessage(),'واحد پول')!==false,'Wrong currency mismatch failure');
+}
 echo "MAHAK_CONTRACT_TEST=PASSED\n";
