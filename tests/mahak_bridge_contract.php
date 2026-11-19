@@ -70,6 +70,8 @@ $status=vmb_status(array('request_key'=>$payload['request_key']));
 assert_true($status['status']==='accepted_pending_sync','Unexported product must remain pending');
 $GLOBALS['catalog']['Products'][]=array('ProductCode'=>'998813','Name'=>'LIORA TEST PRODUCT',
     'ProductId'=>99989998,'Deleted'=>false);
+$GLOBALS['catalog']['ProductDetails'][]=array('ProductCode'=>'998813','ProductId'=>99989998,
+    'ProductDetailId'=>99989999,'Price1'=>600000,'Deleted'=>false);
 $confirmed=vmb_status(array('request_key'=>$payload['request_key']));
 assert_true($confirmed['status']==='visible_in_cloud_export','Readback did not update state');
 assert_true($confirmed['mahak_product_id']===99989998,'Mahak ID mismatch');
