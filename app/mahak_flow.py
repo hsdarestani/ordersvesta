@@ -183,7 +183,8 @@ async def check_status(uid, chat):
 
 async def maybe_text(update, ctx):
     text = (update.message.text or '').strip()
-    if text in {LABEL, '🧾 ثبت کالا در محک', '🧾 ساخت کالای جدید در محک'}:
+    if text in {LABEL, '🧾 ثبت کالا در محک', '🧾 ساخت کالای جدید در محک',
+                '📸 عکس و محتوای کالای محک', '📥 کالای محک به سایت'}:
         await start(update, ctx)
         return True
 
