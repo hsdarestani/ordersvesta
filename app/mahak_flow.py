@@ -33,6 +33,7 @@ def _confirm_keyboard():
 def _status_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton('🔎 بررسی همگام‌سازی محک', callback_data='mahak:status')],
+        [InlineKeyboardButton('📸 تکمیل عکس و کپشن روی سایت', callback_data='mahakcontent:from_accounting')],
         [InlineKeyboardButton('➕ کالای بعدی', callback_data='mahak:new')],
     ])
 
