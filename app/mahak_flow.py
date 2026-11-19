@@ -159,7 +159,8 @@ async def check_status(uid, chat):
     except Exception as exc:
         await chat.send_message(f'❌ بررسی وضعیت ناموفق بود: {exc}')
         return
-    _save_job(uid, data, str(result.get('status') or 'unknown'))
+    data['mahak_status']=str(result.get('status') or 'unknown')
+    _save_job(uid, data, data['mahak_status'])
     if result.get('status') == 'not_submitted':
         state = ops.get_state(uid)
         if (state and state.get('flow') == 'mahak_product'
@@ -179,6 +180,27 @@ async def check_status(uid, chat):
         f"\n{result.get('note') or ''}",
         reply_markup=_status_keyboard(),
     )
+    if result.get('status') in ('accepted_pending_sync','visible_in_cloud_export'):
+        if not data.get('content_staged') and 'image_ids' in data:
+            await _stage_for_site(uid,data,chat)
+        else:
+            try:
+                stage=await asyncio.to_thread(
+                    BridgeWooClient().call,'mahak_content_pending_status',
+                    {'request_key':data['request_key']},
+                )
+                label={
+                    'queued':'📤 محتوای سایت در صف ثبت خودکار است.',
+                    'waiting_mahak':'⏳ در انتظار تأیید شناسه محک.',
+                    'waiting_site':'⏳ محک تأیید شده؛ در انتظار ساخت پیش‌نویس سایت.',
+                    'applied':'✅ محتوا به محصول سایت متصل شده است.',
+                    'requires_review':'⚠️ اتصال خودکار نیاز به بررسی شناسه یا محصول دارد.',
+                    'not_staged':'⚠️ محتوای محصول هنوز در صف سایت ثبت نشده.'
+                }.get(stage.get('status'),'وضعیت صف محتوا: '+str(stage.get('status')))
+                await chat.send_message(label+('\nشناسه سایت: '+str(stage['woo_id'])
+                    if stage.get('woo_id') else ''))
+            except Exception as exc:
+                await chat.send_message(f'وضعیت محتوای سایت قابل خواندن نیست: {exc}')
 
 
 async def maybe_text(update, ctx):
