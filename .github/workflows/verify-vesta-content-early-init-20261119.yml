@@ -1,0 +1,35 @@
+name: Diagnose Mahak content early HTTP context via signed live bot transport
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/verify-vesta-content-early-init-20261119.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Read authenticated Mahak content live WP Woo initialization state
+        env:
+          HOST: ${{ secrets.HOST }}
+          PASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          sshpass -p "$PASS" ssh -p 9011 -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          cd /opt/ordersvesta
+          docker compose -p ordersvesta exec -T bot python - <<'PY'
+          from app.bridge_client import BridgeWooClient
+          import json
+          b=BridgeWooClient()
+          for pid,code,woo in [(10755492,'103260',105604),(10755477,'103201',105617),(10684982,'92503',103417)]:
+              try:
+                  x=b.call('mahak_content_diag',{'product_id':pid,'code':code,'woo_id':woo})
+                  print('EARLY_WP_CONTENT_DIAG='+json.dumps(x,ensure_ascii=False))
+              except Exception as e:print('EARLY_WP_CONTENT_DIAG_FAILED='+str(e)[:230])
+          print('EARLY_WP_CONTENT_DIAG_READ_ONLY=yes')
+          PY
+          REMOTE
