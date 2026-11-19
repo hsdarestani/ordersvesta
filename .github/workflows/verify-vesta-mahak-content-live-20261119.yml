@@ -1,0 +1,73 @@
+name: Verify production Telegram Mahak content bridge and bot menu
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/verify-vesta-mahak-content-live-20261119.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - name: Check current production bot -> signed WordPress editor without writing data
+        env:
+          HOST: ${{ secrets.HOST }}
+          PASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$HOST"; test -n "$PASS"
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          sshpass -p "$PASS" ssh -p 9011 -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          cd /opt/ordersvesta
+          docker compose -p ordersvesta exec -T bot python - <<'PY'
+          from app.bridge_client import BridgeWooClient
+          from app import operations as ops
+          from app import mahak_content_flow as editor
+          import json
+          client=BridgeWooClient()
+          assert any(editor.LABEL in row for row in ops.main_menu().keyboard for label in row for row in [label.text])
+          print("TELEGRAM_CONTENT_MENU_REGISTERED=yes")
+          for erp,code,woo,expected_type in [
+              (10755492,"103260",105604,"variable"),
+              (10755477,"103201",105617,"simple"),
+              (10684982,"92503",103417,"variable"),
+          ]:
+              out=client.call("mahak_content_status",{
+                  "product_id":erp,"code":code,"woo_id":woo,
+              })
+              assert out["woo_id"]==woo and out["type"]==expected_type
+              assert out["price_and_stock_are_accounting_controlled"] is True
+              assert out["edit_url"].startswith("https://vesta-cosmetics.ir/")
+              assert "image_id" in out and "weight_grams" in out
+              print("TELEGRAM_CONTENT_SIGNED_STATUS="+json.dumps({
+                  "woo_id":woo,"type":out["type"],
+                  "image_id":out["image_id"],
+                  "weight_grams":out["weight_grams"]
+              },ensure_ascii=False))
+          try:
+              client.call("mahak_content_save", {
+                  "request_key":"invalid",
+                  "product_id":10755492,"code":"103260","woo_id":105604,
+                  "caption":"should never reach save",
+              })
+          except Exception as exc:
+              msg=str(exc)
+              assert "400" in msg or "شناسه" in msg
+              print("TELEGRAM_CONTENT_INVALID_SIGNED_SAVE_REJECTED=yes")
+          else:
+              raise RuntimeError("invalid request unexpectedly accepted")
+          try:
+              client.call("mahak_content_status", {
+                  "product_id":10755492,"code":"103201","woo_id":105604,
+              })
+          except Exception as exc:
+              print("TELEGRAM_CONTENT_WRONG_ERP_CODE_REJECTED=yes")
+          else:
+              raise RuntimeError("wrong ERP product falsely verified")
+          print("TELEGRAM_TO_WORDPRESS_CONTENT_INTEGRATION_READONLY_PASS=yes")
+          PY
+          echo 'NO_CATALOG_OR_ACCOUNTING_WRITES=yes'
+          REMOTE
