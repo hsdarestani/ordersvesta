@@ -269,7 +269,7 @@ async def maybe_text(update, ctx):
             f"الگو: {data['template_name']}\n"
             f"شناسه دسته‌بندی: {data['category_id']}\n"
             f"واحد: {data['unit_name']}\n\n"
-            "قیمت فروش کالای جدید را به **ریال** وارد کنید (فقط عدد).\n"
+            "قیمت فروش کالای جدید را به **تومان** وارد کنید (فقط عدد).\n"
             "موجودی اولیه برای جلوگیری از ایجاد سند انبار، صفر خواهد بود.",
             parse_mode='Markdown',
         )
@@ -278,9 +278,9 @@ async def maybe_text(update, ctx):
     if step == 'price':
         price = _normalize(text)
         if not re.fullmatch(r'\d{1,14}', price) or int(price) <= 0:
-            await chat.send_message('قیمت ریالی باید یک عدد صحیح مثبت باشد.')
+            await chat.send_message('قیمت تومانی باید یک عدد صحیح مثبت باشد.')
             return True
-        data['price_rial'] = price
+        data['price_toman'] = price
         data['request_key'] = secrets.token_hex(16)
         data['image_ids'] = []
         data['caption'] = None
@@ -369,7 +369,7 @@ async def _preview(uid,chat,data):
         '🧾 پیش‌نمایش ثبت در محک و آماده‌سازی سایت\n\n'
         f"نام: {data['name']}\nکد محک: {data['code']}\n"
         f"الگوی دسته/واحد: {data['template_name']}\n"
-        f"قیمت محک: {int(data['price_rial']):,} ریال\n"
+        f"قیمت محک: {int(data['price_toman']):,} تومان\n"
         f"نوع: ساده | موجودی اولیه: ۰\n"
         f"عکس‌ها: {len(data.get('image_ids') or [])}\n"
         f"کپشن: {str(caption)[:330] if caption else 'بدون تغییر'}\n"
@@ -484,7 +484,7 @@ async def maybe_callback(update, ctx):
     try:
         result = await asyncio.to_thread(
             BridgeWooClient().call, 'mahak_submit',
-            {k: data[k] for k in ('request_key', 'name', 'code', 'template_code', 'price_rial')},
+            {k: data[k] for k in ('request_key', 'name', 'code', 'template_code', 'price_toman')},
         )
     except Exception as exc:
         # Do not create a new request_key; the same operation must be reconciled.
