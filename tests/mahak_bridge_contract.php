@@ -74,7 +74,7 @@ assert_true($confirmed['status']==='visible_in_cloud_export','Readback did not u
 assert_true($confirmed['mahak_product_id']===99989998,'Mahak ID mismatch');
 assert_true($GLOBALS['save_count']===1,'Readback must be read-only');
 // New unified bot path: Toman must match both Bazara and Woo settings.
-$toman = array('request_key'=>'2b35c05f574a4bc79c246a8a3a9d317cd',
+$toman = array('request_key'=>'2b35c05f574a4bc79c246a8a3a9d317c',
     'name'=>'LIORA NEW TOMAN PRODUCT','code'=>'998814',
     'template_code'=>'8079','price_toman'=>'2599000');
 $res=vmb_submit($toman);
