@@ -1,0 +1,52 @@
+name: Diagnose signed bot Mahak content product identity context
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/diagnose-vesta-bot-content-identity-20261119.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Read bot bridge origin and lookup context without credentials or writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          PASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          sshpass -p "$PASS" ssh -p 9011 -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          cd /opt/ordersvesta
+          docker compose -p ordersvesta exec -T bot python - <<'PY'
+          from urllib.parse import urlparse
+          from app.bridge_client import BridgeWooClient
+          from app import operations as ops
+          b=BridgeWooClient()
+          print('BOT_PUBLIC_SITE_HOST=',urlparse(b.url).hostname)
+          print('BOT_BRIDGE_RELAY_HOST=',urlparse(b.bridge_url).hostname)
+          for op,payload in [
+              ('ping',{}),
+              ('mahak_site_search',{'query':'103260'}),
+              ('mahak_content_status',{'product_id':10755492,'code':'103260','woo_id':105604}),
+              ('mahak_content_status',{'product_id':10755477,'code':'103201','woo_id':105617}),
+          ]:
+              try:
+                  r=b.call(op,payload)
+                  if op=='ping':
+                      print('BOT_LIVE_PING_SITE=',r.get('site'),'COUNT=',r.get('product_count'))
+                  elif op=='mahak_site_search':
+                      print('BOT_MAHAK_MATCHES=',[
+                          {'code':p.get('code'),'woo_id':p.get('woo_id'),
+                           'product_id':p.get('product_id')}
+                          for p in r.get('items',[])])
+                  else:
+                      print('BOT_CONTENT_STATUS_OK=',op,r.get('woo_id'),r.get('type'))
+              except Exception as ex:
+                  print('BOT_CONTENT_LOOKUP_EXCEPTION=',op,str(ex)[:220])
+          print('BOT_SIGNED_CONTEXT_DIAG_COMPLETE=yes')
+          PY
+          REMOTE
