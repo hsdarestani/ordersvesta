@@ -180,7 +180,9 @@ function vmb_status($data) {
                    if(!isset($children[$v['option']]) ||
                       $children[$v['option']]!==(int)$v['price_toman'])$complete=false;
             }else{
-                if(count($details)!==1|| (int)($details[0]['Price1']??-1)!==(int)($record['price']??-1))
+                if(count($details)!==1||
+                   (isset($record['price'])&&
+                   (int)($details[0]['Price1']??-1)!==(int)$record['price']))
                    $complete=false;
             }
             $record['status']=$complete?'visible_in_cloud_export':'details_unverified';
@@ -278,7 +280,9 @@ function vmb_submit($data) {
         'variant_spec'=>$variantSpec,
         'requested_stock_qty'=>$variantSpec===null?(int)$simpleStock:null,
         'stock_intent_status'=>$variantSpec!==null?
-             'warehouse_document_required':((int)$simpleStock>0?'warehouse_document_required':'none'),
+             (array_sum(array_map(fn($v)=>(int)$v['stock_qty'],$variantSpec['variants']))>0?
+              'warehouse_document_required':'none'):
+              ((int)$simpleStock>0?'warehouse_document_required':'none'),
         'requested_at' => gmdate('c'),
     );
     if (!add_option($request_key, $record, '', false)) {
