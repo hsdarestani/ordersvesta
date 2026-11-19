@@ -1,0 +1,61 @@
+name: Verify unified Telegram product -> Mahak -> Woo staging live
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/verify-vesta-unified-mahak-product-20261119.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Test single menu and authenticated staging bridge without creating any product
+        env:
+          HOST: ${{ secrets.HOST }}
+          PASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -p "$PASS" ssh -p 9011 -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          cd /opt/ordersvesta
+          docker compose -p ordersvesta exec -T bot python - <<'PY'
+          from app import operations as ops, mahak_flow as flow, entrypoint
+          from app.bridge_client import BridgeWooClient
+          assert flow.LABEL == '➕ ثبت محصول جدید'
+          menu=[b.text for row in ops.main_menu().keyboard for b in row]
+          woo=[b.text for row in ops.woo_menu().keyboard for b in row]
+          assert menu.count(flow.LABEL)==1 and woo.count(flow.LABEL)==1,(menu,woo)
+          assert '📥 کالای محک به سایت' not in menu
+          assert '📸 عکس و محتوای کالای محک' not in menu
+          assert callable(flow.maybe_photo) and callable(flow.maybe_callback)
+          assert entrypoint.m.photo is entrypoint.routed_photo
+          print('UNIFIED_BOT_SINGLE_PRODUCT_ENTRY_VERIFIED=yes')
+          b=BridgeWooClient()
+          t=b.call('mahak_template',{'template_code':'8079'})
+          assert t.get('code')=='8079'
+          print('UNIFIED_BOT_MAHAK_SOURCE_TEMPLATE_READ=yes')
+          stage=b.call('mahak_content_pending_status',{'request_key':'0'*32})
+          assert stage.get('status')=='not_staged',stage
+          print('UNIFIED_BOT_CONTENT_QUEUE_SIGNED_READ=yes')
+          try:
+             b.call('mahak_content_stage',{
+                'request_key':'0'*32,'code':'not-real','image_ids':[123],
+             })
+          except Exception as e:
+             assert '400' in str(e) or 'پذیرفته' in str(e)
+             print('UNIFIED_BOT_UNVERIFIED_ACCOUNTING_WRITE_BLOCKED=yes')
+          else:raise RuntimeError('Unsigned stage unexpectedly accepted')
+          item=b.call('mahak_content_status',{
+            'product_id':10755477,'code':'103201','woo_id':105617,
+          })
+          assert item['woo_id']==105617
+          print('UNIFIED_BOT_WOO_PRODUCT_IDENTITY_VERIFIED=yes')
+          print('UNIFIED_BOT_TO_MAHAK_TO_WOO_READONLY_PASS=yes')
+          PY
+          curl --fail --silent --max-time 8 http://127.0.0.1:8094/health
+          echo 'NO_REAL_PRODUCTS_CREATED=yes'
+          REMOTE
