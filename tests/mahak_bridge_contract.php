@@ -13,6 +13,7 @@ $GLOBALS['outbound'] = null;
 $GLOBALS['options']['bazara_visitor_settings'] = array('selectCurrencySoftware'=>'toman','selectCurrencyPlugin'=>'toman');
 function add_action($hook,$callback,$priority=10) {}
 function sanitize_text_field($v) { return trim(strip_tags($v)); }
+function wp_json_encode($v,$flags=0) { return json_encode($v,$flags); }
 function get_option($key,$default=null) { return $GLOBALS['options'][$key] ?? $default; }
 function add_option($key,$value,$deprecated='',$autoload=false) {
     if (array_key_exists($key,$GLOBALS['options'])) return false;
@@ -91,4 +92,91 @@ try {
 } catch (RuntimeException $exc) {
     assert_true(strpos($exc->getMessage(),'واحد پول')!==false,'Wrong currency mismatch failure');
 }
+
+// Verified active Mahak variable template: base detail code 0, group C=3,
+// and one or more child details with C/V descriptors.
+$GLOBALS['catalog']['Products'][] = [
+    'ProductCode'=>'92503','Name'=>'Sample Brow Pencil','ProductId'=>10684982,
+    'ProductCategoryId'=>418342,'UnitName'=>'عدد','UnitName2'=>'عدد','Deleted'=>false
+];
+$GLOBALS['catalog']['ProductDetails']=[
+    ['ProductId'=>10684982,'ProductDetailId'=>12183195,'ProductDetailCode'=>0,
+     'Properties'=>null,'Price1'=>110000,'Deleted'=>false],
+    ['ProductId'=>10684982,'ProductDetailId'=>12222868,'ProductDetailCode'=>1000,
+     'Properties'=>'[{"C":"3","V":"قهوه ای"}]','Price1'=>110000,'Deleted'=>false]
+];
+$GLOBALS['options']['bazara_visitor_settings']['selectCurrencyPlugin']='toman';
+$profile=vmb_template(['template_code'=>'92503']);
+assert_true(($profile['variation_template']['group_code']??null)==='3','Cannot read verified Mahak C group');
+$variable=[
+ 'request_key'=>'a444d6a48df94778b9ea1b9196a9d028',
+ 'name'=>'Test Multiple Brow Colours','code'=>'998819',
+ 'template_code'=>'92503','price_toman'=>'110000',
+ 'variant_group_code'=>'3','attribute_name'=>'رنگ',
+ 'variants'=>[
+   ['option'=>'قهوه ای','price_toman'=>'110000','stock_qty'=>'36'],
+   ['option'=>'مشکی','price_toman'=>'120000','stock_qty'=>'11'],
+ ],
+ 'stock_qty'=>'0'
+];
+assert_true(strlen($variable['request_key'])===32,'Invalid variable test key');
+$before=$GLOBALS['save_count'];
+$variableResult=vmb_submit($variable);
+assert_true($variableResult['status']==='accepted_pending_sync','Cloud variant acceptance rejected');
+assert_true(($variableResult['is_variable']??false)===true,'Variable result type lost');
+assert_true($GLOBALS['save_count']===$before+1,'Must submit all variants in only one SaveAllData');
+$details=$GLOBALS['outbound']['productDetails'];
+assert_true(count($details)===3,'Mahak variable must have base detail and two child details');
+assert_true($details[0]['productDetailCode']===0,'Base detail must be code 0');
+assert_true($details[1]['productDetailCode']===1000 &&
+    $details[2]['productDetailCode']===1001,'Unstable variation detail codes');
+assert_true($details[1]['price1']===110000 && $details[2]['price1']===120000,
+    'Individual Toman prices lost');
+assert_true(json_decode($details[1]['properties'],true)[0]===['C'=>'3','V'=>'قهوه ای'],
+    'Mahak C/V property group mapping corrupt');
+assert_true($details[1]['count1']===0 && $details[2]['count1']===0,
+    'Never pretend ProductDetail.Count1 is warehouse stock');
+assert_true(($variableResult['stock_intent_status']??'')==='warehouse_document_required',
+    'Pending actual inventory document must be explicit');
+assert_true(vmb_submit($variable)['status']==='accepted_pending_sync','Idempotent variant submit failed');
+assert_true($GLOBALS['save_count']===$before+1,'Duplicate variant SaveAllData');
+$changed=$variable;$changed['variants'][0]['stock_qty']='99';
+try {vmb_submit($changed);throw new RuntimeException('Same request payload changed');}
+catch (RuntimeException $e) {
+    assert_true(strpos($e->getMessage(),'شناسه درخواست')!==false,'Unexpected change rejection');
+}
+$bad=$variable;$bad['request_key']='b444d6a48df94778b9ea1b9196a9d028';$bad['code']='998820';
+$bad['variant_group_code']='999';
+try {vmb_submit($bad);throw new RuntimeException('Unverified property group created');}
+catch (RuntimeException $e) {
+    assert_true(strpos($e->getMessage(),'گروه تنوع')!==false,'Invalid C group not blocked');
+}
+assert_true($GLOBALS['save_count']===$before+1,'Failed variant validation triggered write');
+$GLOBALS['catalog']['Products'][]=[
+  'ProductCode'=>'998819','Name'=>'Test Multiple Brow Colours','ProductId'=>999819,
+  'ProductCategoryId'=>418342,'Deleted'=>false
+];
+$seen=vmb_status(['request_key'=>$variable['request_key']]);
+assert_true($seen['status']==='details_unverified',
+    'Cloud parent alone must not imply completed variations');
+$GLOBALS['catalog']['ProductDetails'][]=[
+  'ProductId'=>999819,'ProductDetailId'=>290001,'ProductDetailCode'=>0,
+  'Properties'=>null,'Price1'=>110000,'Deleted'=>false
+];
+$GLOBALS['catalog']['ProductDetails'][]=[
+  'ProductId'=>999819,'ProductDetailId'=>290002,'ProductDetailCode'=>1000,
+  'Properties'=>'[{"C":"3","V":"قهوه ای"}]','Price1'=>110000,'Deleted'=>false
+];
+$GLOBALS['catalog']['ProductDetails'][]=[
+  'ProductId'=>999819,'ProductDetailId'=>290003,'ProductDetailCode'=>1001,
+  'Properties'=>'[{"C":"3","V":"مشکی"}]','Price1'=>120000,'Deleted'=>false
+];
+$readback=vmb_status(['request_key'=>$variable['request_key']]);
+assert_true($readback['status']==='visible_in_cloud_export',
+    'Readback must verify all variation prices and values');
+assert_true(($readback['mahak_product_id']??0)===999819,
+    'Mahak parent identifier lost after variant acceptance');
+assert_true($GLOBALS['save_count']===$before+1,'Readback must never write');
+echo "MAHAK_VARIANT_CONTRACT=PASSED\n";
+
 echo "MAHAK_CONTRACT_TEST=PASSED\n";
