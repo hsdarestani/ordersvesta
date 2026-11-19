@@ -45,6 +45,7 @@ def _confirm_markup():
 
 def _status_markup():
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton('📸 عکس، کپشن و وزن همین کالا', callback_data='mahaksite:content')],
         [InlineKeyboardButton('🔎 بررسی نتیجه انتقال', callback_data='mahaksite:status')],
         [InlineKeyboardButton('📥 کالای بعدی', callback_data='mahaksite:again')],
     ])
@@ -158,12 +159,13 @@ async def _show_result(chat, item, result):
         message = (
             f"✅ «{item['name']}» به‌صورت پیش‌نویس در ووکامرس ساخته شد.\n"
             f'شناسه سایت: {woo_id}\n'
-            'حالا عکس‌ها، قیمت، توضیحات، دسته‌بندی و موجودی را در سایت تکمیل کنید.'
+            'قیمت و موجودی از محک/بازارا می‌آیند؛ برای عکس، کپشن و وزن دکمه زیر را بزنید.'
         )
     elif status == 'already_on_site':
         message = (
             f"✅ «{item['name']}» از قبل در ووکامرس وجود دارد (#{woo_id}).\n"
-            'برای جلوگیری از تکرار، هیچ محصول جدیدی ساخته نشد.'
+            'برای جلوگیری از تکرار، هیچ محصول جدیدی ساخته نشد. '
+            'اگر عکس، کپشن یا وزن لازم دارد، دکمه پایین را بزنید.'
         )
     elif status in ('pending', 'uncertain'):
         message = (
@@ -236,6 +238,26 @@ async def maybe_callback(update, ctx):
         await chat.send_message(message, reply_markup=_confirm_markup())
         return True
 
+    if action == 'mahaksite:content':
+        if step != 'selected':
+            await chat.send_message('اول کالای موردنظر را از فهرست محک انتخاب کنید.')
+            return True
+        item=state['data'].get('selected') or {}
+        try:
+            status=await asyncio.to_thread(
+                BridgeWooClient().call,'mahak_site_status',
+                {'product_id':item['product_id'],'code':item['code']},
+            )
+        except Exception as exc:
+            await chat.send_message(f'وضعیت کالا قابل تأیید نیست: {exc}')
+            return True
+        woo_id=int(status.get('woo_id') or 0)
+        if not woo_id:
+            await chat.send_message('کالا هنوز در سایت ایجاد نشده؛ بعد از F2 همگام‌سازی را بررسی کنید.')
+            return True
+        from app import mahak_content_flow as content
+        await content._begin_selected(uid, chat, dict(item,woo_id=woo_id))
+        return True
     if action == 'mahaksite:status':
         await _status(uid, chat)
         return True
