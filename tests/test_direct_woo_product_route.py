@@ -27,11 +27,16 @@ class LegacyProductRoutingTests(unittest.IsolatedAsyncioTestCase):
             begin_product=AsyncMock(return_value="started-woo"),
             reset_user_flow=Mock(),
             main_menu=Mock(return_value="main-menu"),
+            shopino_menu=Mock(return_value="shopino-menu"),
+            set_state=Mock(),
+            get_state=Mock(return_value=None),
         )
         self.sms = SimpleNamespace(
             clear_state=Mock(),
             text=AsyncMock(return_value="sms-fallback"),
             callback=AsyncMock(return_value="callback-fallback"),
+            document=AsyncMock(return_value="sms-document"),
+            waiting_for_document=Mock(return_value=False),
         )
         self.m = SimpleNamespace(access=AsyncMock(return_value=True), allowed=Mock(return_value=True))
         self.ns = {
@@ -78,6 +83,49 @@ class LegacyProductRoutingTests(unittest.IsolatedAsyncioTestCase):
             await self.callback_router(SimpleNamespace(callback_query=q), None)
             q.answer.assert_awaited_once()
         self.sms.callback.assert_not_awaited()
+
+    async def test_shopino_section_accepts_excel_immediately(self):
+        update = self.message("📦 رهگیری شاپینو")
+        await self.text_router(update, None)
+        self.ops.set_state.assert_called_once_with(42, "shopino_tracking", "waiting_file", {})
+        self.sms.clear_state.assert_called_once_with(42)
+        self.sms.text.assert_not_awaited()
+        update.message.reply_text.assert_awaited_once()
+
+    async def test_shopino_upload_button_clears_stale_sms_state(self):
+        update = self.message("📤 ارسال فایل رهگیری")
+        await self.text_router(update, None)
+        self.ops.set_state.assert_called_once_with(42, "shopino_tracking", "waiting_file", {})
+        self.sms.clear_state.assert_called_once_with(42)
+
+    async def test_shopino_document_wins_over_stale_sms_upload(self):
+        state = {"flow": "shopino_tracking", "step": "waiting_file"}
+        self.ops.get_state.return_value = state
+        self.sms.waiting_for_document.return_value = True
+        legacy_document = AsyncMock(return_value="shopino-import")
+        website_queue = AsyncMock(return_value="website-queue")
+        self.ns["st"] = SimpleNamespace(ORIG_DOCUMENT=legacy_document)
+        self.ns["tq"] = SimpleNamespace(document=website_queue)
+        router = make_router("routed_document", self.ns)
+        update = SimpleNamespace(effective_user=SimpleNamespace(id=42))
+        result = await router(update, None)
+        self.assertEqual(result, "shopino-import")
+        legacy_document.assert_awaited_once_with(update, None)
+        self.sms.document.assert_not_awaited()
+        website_queue.assert_not_awaited()
+        self.sms.clear_state.assert_called_once_with(42)
+
+    async def test_website_tracking_document_still_stays_on_website(self):
+        self.ops.get_state.return_value = {"flow": "site_tracking", "step": "waiting_file"}
+        self.sms.waiting_for_document.return_value = True
+        self.ns["st"] = SimpleNamespace(ORIG_DOCUMENT=AsyncMock())
+        website_queue = AsyncMock(return_value="website-queue")
+        self.ns["tq"] = SimpleNamespace(document=website_queue)
+        router = make_router("routed_document", self.ns)
+        update = SimpleNamespace(effective_user=SimpleNamespace(id=42))
+        self.assertEqual(await router(update, None), "website-queue")
+        website_queue.assert_awaited_once()
+        self.sms.document.assert_not_awaited()
 
     async def test_other_messages_still_reach_existing_flow(self):
         update = self.message("محصول تستی")

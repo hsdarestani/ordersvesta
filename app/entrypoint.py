@@ -79,6 +79,26 @@ LEGACY_ACCOUNTING_LABELS = {
 
 async def routed_text(update, ctx):
     value = (update.message.text or '').strip()
+    if value in {'📦 رهگیری شاپینو', '📤 ارسال فایل رهگیری'}:
+        # Shopino is always explicit and independent from the website SMS inbox.
+        # Old "await_file" state must not hijack a Shopino spreadsheet.
+        if not await m.access(update):
+            return
+        uid = update.effective_user.id
+        sms_flow.clear_state(uid)
+        ops.set_state(uid, 'shopino_tracking', 'waiting_file', {})
+        if value == '📦 رهگیری شاپینو':
+            return await update.message.reply_text(
+                '📦 رهگیری شاپینو\n\n'
+                'فایل اکسل کدهای پستی (XLSX/XLSM) را همینجا بفرستید. '
+                'دیگر لازم نیست دکمه دوم را بزنید.\n'
+                'اگر نشست شاپینو منقضی شده بود، «🔐 ورود شاپینو» را انتخاب کنید.',
+                reply_markup=ops.shopino_menu(),
+            )
+        return await update.message.reply_text(
+            '📥 آماده دریافت اکسل رهگیری شاپینو (XLSX/XLSM). فایل را بفرستید.',
+            reply_markup=ops.shopino_menu(),
+        )
     if value == '➕ ثبت محصول جدید':
         # Prioritize site product creation over a stale SMS or accounting wizard.
         if not await m.access(update):
@@ -119,7 +139,18 @@ m.photo = pux.photo
 
 
 async def routed_document(update, ctx):
-    if sms_flow.waiting_for_document(update.effective_user.id):
+    # Never let the website SMS workflow consume an explicitly selected Shopino
+    # spreadsheet, including when SMS mode persisted from a prior session.
+    uid = update.effective_user.id
+    state = ops.get_state(uid)
+    if state and state.get('flow') == 'shopino_tracking':
+        if not await m.access(update):
+            return
+        sms_flow.clear_state(uid)
+        return await st.ORIG_DOCUMENT(update, ctx)
+    if state and state.get('flow') == 'site_tracking':
+        return await tq.document(update, ctx)
+    if sms_flow.waiting_for_document(uid):
         return await sms_flow.document(update, ctx)
     return await tq.document(update, ctx)
 
