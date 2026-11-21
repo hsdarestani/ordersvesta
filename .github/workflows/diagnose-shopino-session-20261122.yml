@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
-      - name: Inspect Shopino session without changing orders
+      - name: Inspect Shopino response without printing credentials or order data
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.HOST }}
@@ -26,17 +26,37 @@ jobs:
             set -euo pipefail
             cd /opt/ordersvesta
             docker compose -p ordersvesta exec -T bot python - <<'PY'
+            import hashlib
+            import re
+            import httpx
             from app import main as m
             from app import runner
-            try:
-                result = m.api().probe()
-            except m.AuthError:
-                print('SHOPINO_SESSION=EXPIRED')
-                raise SystemExit(21)
-            except Exception as e:
-                print('SHOPINO_SESSION=ERROR')
-                print('ERROR_TYPE=' + type(e).__name__)
-                raise SystemExit(22)
-            print('SHOPINO_SESSION=VALID')
-            print('READ_ONLY_VISIBLE_ORDER_COUNT=' + str(result))
+            client = m.api()
+            url = f'{m.BASE}/shops/{m.SHOP}/order-shippings/'
+            for kind, args in [('normal', {}), ('no-redirect', {'follow_redirects': False})]:
+                try:
+                    response = client.c.get(url, params={'page': 1, 'page_size': 1}, **args)
+                    print('PROBE=' + kind)
+                    print('HTTP_STATUS=' + str(response.status_code))
+                    print('CONTENT_TYPE=' + str(response.headers.get('content-type', 'none')).split(';')[0][:70])
+                    print('BODY_SIZE=' + str(len(response.content)))
+                    print('BODY_SHA256=' + hashlib.sha256(response.content).hexdigest()[:16])
+                    print('FINAL_HOST=' + str(response.url.host))
+                    print('FINAL_PATH=' + str(response.url.path))
+                    title = re.search(r'<title[^>]*>(.*?)</title>', response.text[:4000], flags=re.I | re.S)
+                    if title:
+                        print('HTML_TITLE=' + re.sub(r'\\s+', ' ', title.group(1))[:100])
+                    for word in ('captcha', 'cloudflare', 'just a moment', 'login', 'sign in', 'access denied', 'nginx'):
+                        print('HINT_' + word.replace(' ', '_').upper() + '=' + str(word in response.text.lower()))
+                    try:
+                        data = response.json()
+                        print('VALID_JSON=yes')
+                        print('JSON_TYPE=' + type(data).__name__)
+                        if isinstance(data, dict):
+                            print('JSON_KEYS=' + ','.join(sorted(data.keys())[:12]))
+                            print('ORDER_COUNT=' + str(data.get('count', 'unknown')))
+                    except (ValueError, UnicodeError):
+                        print('VALID_JSON=no')
+                except Exception as exc:
+                    print('PROBE_ERROR_TYPE=' + type(exc).__name__)
             PY
