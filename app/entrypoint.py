@@ -43,8 +43,6 @@ st.ORIG_TEXT = wopt.text
 from app import routing_hotfix as rh  # noqa: F401
 # Mutating WooCommerce calls get one long request instead of unsafe short multi-route retries.
 from app import mutation_transport  # noqa: F401
-# Mahak requests require longer reads; SaveAllData is single-shot, never fanned out.
-from app import mahak_transport  # noqa: F401
 # Durable queue stores website-tracking files locally until the WordPress site pulls them.
 from app import tracking_queue as tq
 # Immediate wake worker removes the WP-Cron wait after a tracking file is queued.
@@ -55,8 +53,6 @@ from app import site_tracking_rows  # noqa: F401
 from app import tracking_status as tstatus
 # Product-route recovery keeps top-level navigation global and repairs stale empty category caches.
 from app import product_route_recovery as prr
-# Isolated accounting-product flow; does not touch WooCommerce publishing.
-from app import mahak_flow as mahak
 # The SMS feature is a separate website-order workflow and never uses the marketplace session.
 from app import sms_website_flow as sms_flow
 # Paid Vestaland orders are verified against Hamoon and then written through the signed WP bridge.
@@ -71,15 +67,47 @@ _base_text_handler = prr.text
 _base_callback_handler = review_ux.callback
 
 
+# Old Telegram buttons can remain on users' devices after deployment.
+# They must never submit any accounting product mutation.
+LEGACY_ACCOUNTING_LABELS = {
+    '🧾 ثبت کالا در محک',
+    '🧾 ساخت کالای جدید در محک',
+    '📸 عکس و محتوای کالای محک',
+    '📥 کالای محک به سایت',
+}
+
+
 async def routed_text(update, ctx):
-    if await mahak.maybe_text(update, ctx):
-        return
+    value = (update.message.text or '').strip()
+    if value == '➕ ثبت محصول جدید':
+        # Prioritize site product creation over a stale SMS or accounting wizard.
+        if not await m.access(update):
+            return
+        sms_flow.clear_state(update.effective_user.id)
+        return await ops.begin_product(update)
+    if value in LEGACY_ACCOUNTING_LABELS:
+        if not await m.access(update):
+            return
+        sms_flow.clear_state(update.effective_user.id)
+        ops.reset_user_flow(update.effective_user.id)
+        return await update.message.reply_text(
+            'ثبت محصول از این پس مستقیم در ووکامرس انجام می‌شود. '
+            'از «➕ ثبت محصول جدید» استفاده کنید.',
+            reply_markup=ops.main_menu(),
+        )
     return await sms_flow.text(update, ctx, _base_text_handler)
 
 
 async def routed_callback(update, ctx):
-    if await mahak.maybe_callback(update, ctx):
-        return
+    q = update.callback_query
+    action = q.data or ''
+    if action.startswith(('mahak:', 'mahaksite:', 'mahakcontent:')):
+        if not m.allowed(q.from_user.id):
+            return await q.answer('دسترسی ندارید', show_alert=True)
+        return await q.answer(
+            'مسیر قدیمی حسابداری غیرفعال است. از منوی ربات ثبت مستقیم محصول را انتخاب کنید.',
+            show_alert=True,
+        )
     return await sms_flow.callback(update, ctx, _base_callback_handler)
 
 
@@ -87,13 +115,7 @@ m.start = ops.start
 m.sms_command = sms_flow.sms_command
 m.text = routed_text
 m.callback = routed_callback
-async def routed_photo(update, ctx):
-    if await mahak.maybe_photo(update, ctx):
-        return
-    return await pux.photo(update, ctx)
-
-
-m.photo = routed_photo
+m.photo = pux.photo
 
 
 async def routed_document(update, ctx):
@@ -147,9 +169,6 @@ def main():
     a.add_handler(CommandHandler('allow', m.allow_cmd))
     a.add_handler(CommandHandler('users', m.users))
     a.add_handler(CommandHandler('sms', m.sms_command))
-    a.add_handler(CommandHandler('mahak', mahak.start))
-    a.add_handler(CommandHandler(['mahaksite', 'importmahak','mahakcontent','productcontent'], mahak.start))
-    a.add_handler(CommandHandler('mahakstatus', mahak.command_status))
     a.add_handler(CallbackQueryHandler(m.callback))
     a.add_handler(MessageHandler(filters.PHOTO, m.photo))
     a.add_handler(MessageHandler(filters.Document.ALL, m.document))
