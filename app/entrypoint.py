@@ -43,6 +43,9 @@ st.ORIG_TEXT = wopt.text
 from app import routing_hotfix as rh  # noqa: F401
 # Mutating WooCommerce calls get one long request instead of unsafe short multi-route retries.
 from app import mutation_transport  # noqa: F401
+# Shopino API rejects traffic from our foreign bot VPS. Use the site's signed,
+# sealed-box relay to the existing Iranian origin for orders and login.
+from app import shopino_relay  # noqa: F401
 # Durable queue stores website-tracking files locally until the WordPress site pulls them.
 from app import tracking_queue as tq
 # Immediate wake worker removes the WP-Cron wait after a tracking file is queued.
