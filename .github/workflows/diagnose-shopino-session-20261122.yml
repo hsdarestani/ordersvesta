@@ -1,0 +1,42 @@
+name: Diagnose live Shopino tracking session read-only
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/diagnose-shopino-session-20261122.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shopino-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Inspect Shopino session without changing orders
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.HOST }}
+          port: ${{ secrets.SSH_PORT || '9011' }}
+          username: root
+          password: ${{ secrets.PASS }}
+          command_timeout: 5m
+          script: |
+            set -euo pipefail
+            cd /opt/ordersvesta
+            docker compose -p ordersvesta exec -T bot python - <<'PY'
+            from app import main as m
+            from app import runner
+            try:
+                result = m.api().probe()
+            except m.AuthError:
+                print('SHOPINO_SESSION=EXPIRED')
+                raise SystemExit(21)
+            except Exception as e:
+                print('SHOPINO_SESSION=ERROR')
+                print('ERROR_TYPE=' + type(e).__name__)
+                raise SystemExit(22)
+            print('SHOPINO_SESSION=VALID')
+            print('READ_ONLY_VISIBLE_ORDER_COUNT=' + str(result))
+            PY
