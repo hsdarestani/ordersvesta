@@ -87,6 +87,22 @@ def _shopino_error(status):
         raise RuntimeError(f'شاپینو درخواست را رد کرد (HTTP {status}).')
 
 
+class _RelayHTTPClient:
+    """Keep the HTTP transport API separate from the order-level API."""
+
+    def __init__(self, relay):
+        self._relay = relay
+
+    def request(self, method, url, **kwargs):
+        return self._relay.request(method, url, **kwargs)
+
+    def get(self, url, **kwargs):
+        return self.request('GET', url, **kwargs)
+
+    def patch(self, url, **kwargs):
+        return self.request('PATCH', url, **kwargs)
+
+
 class RelayShopino(m.Shopino):
     """Drop-in implementation of the existing authenticated Shopino client.
 
@@ -97,7 +113,7 @@ class RelayShopino(m.Shopino):
 
     def __init__(self, sid):
         self.sid = str(sid or '')
-        self.c = self
+        self.c = _RelayHTTPClient(self)
         if not re.fullmatch(r'[A-Za-z0-9._~-]{8,512}', self.sid):
             raise m.AuthError('نشست شاپینو نامعتبر است. /login را بزنید.')
 
@@ -137,13 +153,6 @@ class RelayShopino(m.Shopino):
         status = int(result['status_code'])
         body = result.get('body') or {}
         return httpx.Response(status, json=body, request=httpx.Request(method, url))
-
-    def get(self, url, **kwargs):
-        return self.request('GET', url, **kwargs)
-
-    def patch(self, url, **kwargs):
-        return self.request('PATCH', url, **kwargs)
-
 
 def send_verification_code(phone):
     phone = m.normalize_phone(phone)
