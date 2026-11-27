@@ -43,6 +43,7 @@ class LegacyProductRoutingTests(unittest.IsolatedAsyncioTestCase):
             "m": self.m,
             "ops": self.ops,
             "sms_flow": self.sms,
+            "stock": SimpleNamespace(LABEL="📦 شارژ موجودی", text=AsyncMock(return_value=False), callback=AsyncMock(return_value=True)),
             "_base_text_handler": object(),
             "_base_callback_handler": object(),
             "LEGACY_ACCOUNTING_LABELS": {
@@ -126,6 +127,19 @@ class LegacyProductRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await router(update, None), "website-queue")
         website_queue.assert_awaited_once()
         self.sms.document.assert_not_awaited()
+
+    async def test_stock_button_uses_stock_router(self):
+        update = self.message("📦 شارژ موجودی")
+        await self.text_router(update, None)
+        self.ns["stock"].text.assert_awaited_once_with(update, None)
+        self.sms.clear_state.assert_called_once_with(42)
+        self.sms.text.assert_not_awaited()
+
+    async def test_stock_callback_uses_stock_router(self):
+        update = SimpleNamespace(callback_query=SimpleNamespace(data="stock:pick:token:1"))
+        await self.callback_router(update, None)
+        self.ns["stock"].callback.assert_awaited_once_with(update, None)
+        self.sms.callback.assert_not_awaited()
 
     async def test_other_messages_still_reach_existing_flow(self):
         update = self.message("محصول تستی")
