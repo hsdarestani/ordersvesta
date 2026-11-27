@@ -8,7 +8,7 @@ from app import bridge_client as bridge
 # rewrite routes after a 4.5s socket timeout can create duplicate products or
 # duplicate variations even though the first PHP request is still finishing.
 _READ_SIGNED_GET = bridge.BridgeWooClient._signed_get
-_MUTATING_OPS = {'create_product', 'create_variation'}
+_MUTATING_OPS = {'create_product', 'create_variation', 'stock_receive'}
 _MUTATION_TIMEOUT_SECONDS = 75.0
 
 

@@ -20,3 +20,5 @@ jobs:
       - run: php tests/mahak_bridge_contract.php
       - run: php -l wordpress/mu-plugins/vesta-mahak-site-import.php
       - run: php tests/mahak_site_import_contract.php
+
+      - run: php -l wordpress/mu-plugins/vesta-stock-receipt.php

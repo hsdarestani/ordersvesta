@@ -1,0 +1,5 @@
+# Telegram stock receipt
+
+New existing-bot menu: 📦 شارژ موجودی. Search partial title or SKU (including out-of-stock), show real thumbnail and ID, select exact variation, enter additive quantity, confirm. Existing bot allowlist and private chats only. No price or product creation changes. Independent managed stock only; shared parent stock is rejected. Search is paginated.
+
+Deployment gate: install wordpress/mu-plugins/vesta-stock-receipt.php on Vesta only using the existing vestacutella deployment mechanism, verify signed read calls from OrdersVesta and confirm WooCommerce is authoritative for stock (including Vesta Accounting / any legacy Bazara overwrite behavior). Only then explicitly enable the vsr_stock_receipt_enabled option with value yes. Default is no. Verify a designated test product and restore via approved adjustment, never use a live sellable item as a test. Verify repeated same request key is not applied twice, exact variation isolation, order concurrency and accounting synchronization. Pending receipts are intentionally not retried. Review Telegram and WordPress logs before rollout. No deployment is performed by this branch.
