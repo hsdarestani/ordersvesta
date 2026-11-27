@@ -153,6 +153,15 @@ function vsr_receive($d) {
         $record['quantity']=(int)$new;
         $record['completed_at']=gmdate('c');
         if (!update_option($key,$record,false)) throw new RuntimeException('Receipt audit needs reconciliation.');
+        // The quantity and audit are committed already. Invalidate the public product
+        // page (parent for a variation) without flushing the whole store.
+        try {
+            $page_id=$p->get_parent_id() ?: $id;
+            wc_delete_product_transients($page_id);
+            if (function_exists('rocket_clean_post')) rocket_clean_post($page_id);
+        } catch (Throwable $e) {
+            error_log('Vesta stock receipt: targeted cache refresh failed for product '.(int)$id);
+        }
         return $record;
     } finally {
         $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)',$lock));
