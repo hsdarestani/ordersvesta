@@ -81,9 +81,25 @@ function vsr_photo($id) {
         $candidate=dirname($file).DIRECTORY_SEPARATOR.basename($thumb);
         if (is_file($candidate)) $file=$candidate;
     }
-    if (filesize($file)>450000 || !in_array(wp_get_image_mime($file),['image/jpeg','image/png'],true))
-        return ['image'=>''];
-    return ['image'=>base64_encode(file_get_contents($file))];
+    if (filesize($file)<=450000 && in_array(wp_get_image_mime($file),['image/jpeg','image/png'],true))
+        return ['image'=>base64_encode(file_get_contents($file))];
+    if (filesize($file)>12000000) return ['image'=>''];
+    require_once ABSPATH.'wp-admin/includes/image.php';
+    $editor=wp_get_image_editor($file);
+    if (is_wp_error($editor)) return ['image'=>''];
+    $editor->resize(320,320,false);
+    $editor->set_quality(82);
+    $tmp=tempnam(get_temp_dir(),'vsr-');
+    if (!$tmp) return ['image'=>''];
+    $target=$tmp.'.jpg';
+    try {
+        $saved=$editor->save($target,'image/jpeg');
+        if (is_wp_error($saved) || !is_file($target) || filesize($target)>450000) return ['image'=>''];
+        return ['image'=>base64_encode(file_get_contents($target))];
+    } finally {
+        @unlink($tmp);
+        @unlink($target);
+    }
 }
 
 function vsr_key($key) {
