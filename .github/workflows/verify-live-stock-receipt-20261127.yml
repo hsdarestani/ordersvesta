@@ -1,0 +1,49 @@
+name: Verify live Telegram stock bridge transport
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/verify-live-stock-receipt-20261127.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Verify existing live signed transport without mutation
+        env:
+          HOST: ${{ secrets.HOST }}
+          PASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          sshpass -p "$PASS" ssh -p 9011 -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          cd /opt/ordersvesta
+          docker compose -p ordersvesta exec -T bot python - <<'PY'
+          from app.bridge_client import BridgeWooClient
+          import base64
+          b=BridgeWooClient()
+          for query in ('کرم','شامپو','ماسک','رژ'):
+              result=b.call('stock_search', {'q':query,'page':1})
+              if result.get('products'):
+                  break
+          else:
+              raise SystemExit('NO_SEARCH_RESULTS')
+          photo_count=0
+          for p in result['products']:
+              d=b.call('stock_detail',{'id':p['id']})['product']
+              assert d['id']==p['id'] and d['identity']==p['identity']
+              photo=b.call('stock_photo',{'id':p['id']}).get('image')
+              if photo:
+                  assert len(base64.b64decode(photo,validate=True))>0
+                  photo_count+=1
+              if photo_count:
+                  break
+          assert photo_count
+          assert b.call('stock_receipt_status',{'request_key':'0'*32})['status']=='unknown'
+          print('SIGNED_STOCK_SEARCH_DETAIL_PHOTO_PASS=yes')
+          print('STOCK_RECEIPT_STATUS_READ_PASS=yes')
+          PY
+          REMOTE
