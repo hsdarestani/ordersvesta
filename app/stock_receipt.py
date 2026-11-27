@@ -25,6 +25,47 @@ def quantity(value):
     return n
 
 
+def price(value):
+    raw = str(value).translate(m.DIGITS).strip()
+    # Accept grouped thousands, not decimal or ambiguous punctuation.
+    if re.fullmatch(r'[0-9]{1,3}(?:[,٬][0-9]{3})+', raw):
+        raw = raw.replace(',', '').replace('٬', '')
+    if not re.fullmatch(r'[1-9][0-9]{0,11}', raw):
+        raise ValueError('قیمت را به صورت عدد صحیح مثبت وارد کنید.')
+    return raw
+
+
+def currency(p):
+    return {'IRT': 'تومان', 'IRR': 'ریال', 'IRHT': 'هزار تومان', 'IRHR': 'هزار ریال'}.get(
+        p.get('currency'), p.get('currency') or 'واحد سایت')
+
+
+def fmt_price(value, p):
+    if value is None or value == '':
+        return 'ثبت نشده'
+    try:
+        from decimal import Decimal
+        n = Decimal(str(value))
+        shown = f'{n:,.0f}' if n == n.to_integral_value() else str(n)
+        return shown + ' ' + currency(p)
+    except Exception:
+        return str(value) + ' ' + currency(p)
+
+
+async def confirm(chat, uid, d):
+    p = d['selected']
+    session(uid, 'confirm', d)
+    change = 'قیمت بدون تغییر'
+    if d.get('price_mode'):
+        label = 'قیمت اصلی' if d['price_mode'] == 'regular' else 'قیمت تخفیف'
+        change = label + ' جدید: ' + fmt_price(d['new_price'], p)
+    await chat.send_message(
+        describe(p) + f"\nتعداد ورودی: {d['amount']}\nموجودی پس از شارژ: {p['quantity'] + d['amount']}\n{change}\n"
+        'اطلاعات را بررسی و تأیید کنید.',
+        reply_markup=keyboard([[('✅ تأیید نهایی', f"stock:apply:{d['token']}")],
+                               [('لغو و جست‌وجوی جدید', f"stock:reset:{d['token']}")]]))
+
+
 def keyboard(rows):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(title, callback_data=action) for title, action in row]
@@ -64,7 +105,10 @@ def describe(p):
     return (
         f"{p['name']}\nکد: {p.get('sku') or 'ندارد'} | شناسه: {p['id']}\n"
         f"مدل: {p.get('attributes') or 'بدون تنوع'}\n"
-        f"موجودی فعلی: {p.get('quantity') if p.get('quantity') is not None else 'نامشخص'}"
+        f"موجودی فعلی: {p.get('quantity') if p.get('quantity') is not None else 'نامشخص'}\n"
+        + (f"قیمت اصلی: {fmt_price(p.get('regular_price'), p)}\n"
+           f"قیمت تخفیف: {fmt_price(p.get('sale_price'), p)}\n"
+           f"قیمت فعلی فروش: {fmt_price(p.get('current_price'), p)}" if p.get('price_enabled') else '')
     )[:850]
 
 
@@ -128,12 +172,31 @@ async def text(update, ctx):
                 n = quantity(value)
                 p = d['selected']
                 d.update(amount=n, request_key=secrets.token_hex(16))
-                session(uid, 'confirm', d)
-                await chat.send_message(
-                    describe(p) + f"\nتعداد ورودی: {n}\nموجودی پس از شارژ: {p['quantity'] + n}\n"
-                    'آیا همین محصول و تعداد صحیح است؟',
-                    reply_markup=keyboard([[('✅ تأیید شارژ', f"stock:apply:{d['token']}")],
-                                           [('لغو و جست‌وجوی جدید', f"stock:reset:{d['token']}")]]))
+                d.pop('price_mode', None)
+                d.pop('new_price', None)
+                if p.get('price_enabled') and p.get('price_version'):
+                    session(uid, 'price_choice', d)
+                    rows = [[('بدون تغییر قیمت', f"stock:keepprice:{d['token']}")],
+                            [('تغییر قیمت اصلی', f"stock:regular:{d['token']}")]]
+                    if p.get('sale_price') not in ('', None):
+                        rows.append([('تغییر قیمت تخفیف', f"stock:sale:{d['token']}")])
+                    await chat.send_message('قیمت را هم تغییر می‌دهید؟\n' + describe(p),
+                                            reply_markup=keyboard(rows))
+                else:
+                    await confirm(chat, uid, d)
+            elif state['step'] == 'price':
+                n = price(value)
+                p = d['selected']
+                if d['price_mode'] == 'regular' and p.get('sale_price') not in ('', None) and float(n) <= float(p['sale_price']):
+                    raise ValueError('قیمت اصلی باید بیشتر از قیمت تخفیف فعلی باشد.')
+                if d['price_mode'] == 'sale' and float(n) >= float(p['regular_price']):
+                    raise ValueError('قیمت تخفیف باید کمتر از قیمت اصلی باشد.')
+                d['new_price'] = n
+                await confirm(chat, uid, d)
+            elif state['step'] == 'price_choice':
+                await chat.send_message('یکی از گزینه‌های تغییر یا حفظ قیمت را انتخاب کنید.')
+            elif state['step'] == 'checking':
+                await chat.send_message('نتیجه ثبت قبلی هنوز نیاز به بررسی دارد. شارژ را تکرار نکنید.')
             elif state['step'] == 'confirm':
                 await chat.send_message('برای ثبت، دکمه تأیید را بزنید یا عملیات را لغو کنید.')
             else:
@@ -184,26 +247,51 @@ async def callback(update, ctx):
                     d.update(selected=p, token=secrets.token_hex(6))
                     session(uid, 'quantity', d)
                     await chat.send_message(describe(p) + '\nچند عدد به موجودی اضافه شود؟')
+            elif action == 'keepprice' and state['step'] == 'price_choice':
+                await confirm(chat, uid, d)
+            elif action in {'regular', 'sale'} and state['step'] == 'price_choice':
+                p = d['selected']
+                if action == 'sale' and p.get('sale_price') in ('', None):
+                    return True
+                d['price_mode'] = action
+                session(uid, 'price', d)
+                await chat.send_message('قیمت جدید را به ' + currency(p) + ' وارد کنید (عدد صحیح).')
             elif action == 'apply' and state['step'] == 'confirm':
                 p = d['selected']
                 payload = {'id': p['id'], 'identity': p['identity'], 'expected': p['quantity'],
                            'amount': d['amount'], 'request_key': d['request_key'], 'actor': str(uid)}
+                operation = 'stock_receive'
+                if d.get('price_mode'):
+                    operation = 'stock_receive_price'
+                    payload.update(price_mode=d['price_mode'], new_price=d['new_price'],
+                                   price_version=p['price_version'])
                 # Consume the UI selection before the write. The same request key remains
                 # available for read-only recovery, never for an automatic second write.
                 session(uid, 'checking', d)
                 try:
-                    result = await call('stock_receive', payload)
+                    result = await call(operation, payload)
                 except Exception:
                     try:
                         result = await call('stock_receipt_status', {'request_key': d['request_key']})
                     except Exception:
                         result = {}
                 if result.get('status') == 'applied':
+                    price_result = result.get('price_result')
+                    price_line = ''
+                    if price_result:
+                        label = 'قیمت اصلی' if price_result['mode'] == 'regular' else 'قیمت تخفیف'
+                        price_line = f"{label} ثبت‌شده: {fmt_price(price_result['value'], p)}\n"
                     await chat.send_message(
                         f"✅ شارژ ثبت شد.\n{p['name']}\nورودی: {d['amount']} عدد\n"
-                        f"موجودی ثبت‌شده: {result['quantity']}\n"
+                        f"موجودی ثبت‌شده: {result['quantity']}\n" + price_line +
                         'برای کالای بعدی نام یا کد آن را بفرستید.')
                     session(uid, 'search', {'chat': chat.id})
+                elif result.get('status') in {'stock_applied_price_pending', 'stock_applied_price_unverified'}:
+                    await chat.send_message(
+                        f"⚠️ موجودی ثبت شد: {result.get('quantity')} عدد.\n"
+                        'تغییر قیمت هنوز تأیید نشده؛ شارژ را تکرار نکنید.\n'
+                        f"شناسه پیگیری: {d['request_key']}")
+                    session(uid, 'checking', d)
                 else:
                     await chat.send_message(
                         '⚠️ نتیجه شارژ قطعی نیست یا موجودی تغییر کرده است. '

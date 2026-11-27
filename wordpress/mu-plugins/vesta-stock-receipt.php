@@ -33,9 +33,39 @@ function vsr_describe($p) {
         'sku'=>$p->get_sku(),'type'=>$p->get_type(),'attributes'=>wp_strip_all_tags($attrs),
         'quantity'=>is_numeric($qty) && (float)$qty===(float)(int)$qty ? (int)$qty : null,
         'image_id'=>$image,'identity'=>$identity,
+        'price_enabled'=>!$p->is_type('variable'),
+        'currency'=>get_woocommerce_currency(),
+        'regular_price'=>(string)$p->get_regular_price('edit'),
+        'sale_price'=>(string)$p->get_sale_price('edit'),
+        'current_price'=>(string)$p->get_price(),
+        'price_version'=>vsr_price_version($p),
         'receivable'=>!$p->is_type('variable') && $p->managing_stock() &&
             (int)$p->get_stock_managed_by_id()===(int)$p->get_id() &&
             is_numeric($qty) && (float)$qty===(float)(int)$qty];
+}
+
+function vsr_price_version($p) {
+    $from=$p->get_date_on_sale_from('edit');$to=$p->get_date_on_sale_to('edit');
+    return hash('sha256',wp_json_encode([(string)$p->get_regular_price('edit'),
+        (string)$p->get_sale_price('edit'),$from?$from->getTimestamp():null,
+        $to?$to->getTimestamp():null,get_woocommerce_currency()]));
+}
+function vsr_price_plan($p,$d) {
+    $mode=$d['price_mode']??'';
+    $value=$d['new_price']??null;
+    if (!in_array($mode,['regular','sale'],true) || !is_string($value) ||
+        !preg_match('/^[1-9][0-9]{0,11}$/D',$value))
+        throw new InvalidArgumentException('Invalid price.');
+    if (!hash_equals(vsr_price_version($p),(string)($d['price_version']??'')))
+        throw new RuntimeException('Price or discount changed; search again.');
+    $regular=(string)$p->get_regular_price('edit');
+    $sale=(string)$p->get_sale_price('edit');
+    if ($mode==='regular' && $sale!=='' && (float)$value<=(float)$sale)
+        throw new RuntimeException('Regular price must be higher than existing sale price.');
+    if ($mode==='sale' && ($sale==='' || $regular==='' || (float)$value>=(float)$regular))
+        throw new RuntimeException('Existing sale price must be lower than regular price.');
+    return ['mode'=>$mode,'value'=>$value,'before_regular'=>$regular,'before_sale'=>$sale,
+        'version'=>vsr_price_version($p),'currency'=>get_woocommerce_currency()];
 }
 
 function vsr_search($d) {
@@ -123,7 +153,10 @@ function vsr_receive($d) {
     if (!$id || !is_int($amount) || $amount<1 || $amount>10000 ||
         !is_int($expected) || !preg_match('/^[0-9]{1,20}$/D',$actor))
         throw new InvalidArgumentException('Invalid stock receipt.');
-    $hash=hash('sha256',wp_json_encode([$id,$amount,$expected,$actor,$d['identity']??'']));
+    $price_requested=array_key_exists('price_mode',$d);
+    $fingerprint=[$id,$amount,$expected,$actor,$d['identity']??''];
+    if ($price_requested) $fingerprint[]=['price',$d['price_mode'],$d['new_price']??null,$d['price_version']??null];
+    $hash=hash('sha256',wp_json_encode($fingerprint));
     $lock='vsr_product_'.$id;
     if ((int)$wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s,8)',$lock))!==1)
         throw new RuntimeException('Stock receipt busy.');
@@ -141,16 +174,47 @@ function vsr_receive($d) {
         // have been verified. Read/search is usable without allowing any writes.
         if (get_option('vsr_stock_receipt_enabled','no')!=='yes')
             throw new RuntimeException('Stock receipts are not enabled.');
+        $plan=$price_requested ? vsr_price_plan($p,$d) : null;
         $record=['status'=>'pending','hash'=>$hash,'product_id'=>$id,'name'=>$item['name'],
             'sku'=>$item['sku'],'actor'=>$actor,'before'=>$expected,'amount'=>$amount,
             'created_at'=>gmdate('c')];
+        if ($plan) $record['price_plan']=$plan;
         if (!add_option($key,$record,'',false)) throw new RuntimeException('Receipt already exists.');
         // Atomic WooCommerce increase: never replace stock or edit the variable parent.
         // A crash after the write leaves a pending receipt for manual reconciliation.
         $new=wc_update_product_stock($p,$amount,'increase');
         if (!is_numeric($new)) throw new RuntimeException('Stock write needs reconciliation.');
-        $record['status']='applied';
         $record['quantity']=(int)$new;
+        if ($plan) {
+            // Persist the stock outcome before touching price. Never replay a partially
+            // completed stock receipt, including after a PHP timeout.
+            $record['status']='stock_applied_price_pending';
+            if (!update_option($key,$record,false)) throw new RuntimeException('Stock audit needs reconciliation.');
+            try {
+                $fresh=vsr_product($id);
+                if (!hash_equals($plan['version'],vsr_price_version($fresh)))
+                    throw new RuntimeException('Price changed after stock update.');
+                if ($plan['mode']==='regular') $fresh->set_regular_price($plan['value']);
+                else $fresh->set_sale_price($plan['value']);
+                $fresh->save();
+                $check=vsr_product($id);
+                $actual=$plan['mode']==='regular' ? $check->get_regular_price('edit') : $check->get_sale_price('edit');
+                if ((float)$actual!==(float)$plan['value']) throw new RuntimeException('Price readback mismatch.');
+                if ($plan['mode']==='regular' && (string)$check->get_sale_price('edit')!==$plan['before_sale'])
+                    throw new RuntimeException('Sale price changed unexpectedly.');
+                if ($plan['mode']==='sale' && (string)$check->get_regular_price('edit')!==$plan['before_regular'])
+                    throw new RuntimeException('Regular price changed unexpectedly.');
+                $record['price_result']=['mode'=>$plan['mode'],'value'=>(string)$actual,
+                    'regular'=>(string)$check->get_regular_price('edit'),'sale'=>(string)$check->get_sale_price('edit'),
+                    'currency'=>$plan['currency']];
+            } catch(Throwable $e) {
+                $record['status']='stock_applied_price_unverified';
+                $record['price_error']='Price update requires manual verification.';
+                update_option($key,$record,false);
+                return $record;
+            }
+        }
+        $record['status']='applied';
         $record['completed_at']=gmdate('c');
         if (!update_option($key,$record,false)) throw new RuntimeException('Receipt audit needs reconciliation.');
         // The quantity and audit are committed already. Invalidate the public product
@@ -169,7 +233,7 @@ function vsr_receive($d) {
 }
 
 // Only intercept our own signed operations, after WooCommerce registers products.
-function vsr_ops() { return ['stock_search','stock_detail','stock_photo','stock_receive','stock_receipt_status']; }
+function vsr_ops() { return ['stock_search','stock_detail','stock_photo','stock_receive','stock_receive_price','stock_receipt_status']; }
 add_action('plugins_loaded',function() {
     if ((string)($_GET['vbb']??'')!=='2' || !in_array(sanitize_key($_GET['o']??''),vsr_ops(),true)) return;
     remove_action('plugins_loaded','vbb_handle_v2_request',PHP_INT_MAX);
@@ -187,7 +251,12 @@ function vsr_dispatch() {
             case 'stock_search': $out=vsr_search($d); break;
             case 'stock_detail': $out=['product'=>vsr_describe(vsr_product($d['id']??0))]; break;
             case 'stock_photo': $out=vsr_photo($d['id']??0); break;
-            case 'stock_receive': $out=vsr_receive($d); break;
+            case 'stock_receive':
+                if (array_key_exists('price_mode',$d)) throw new RuntimeException('Use combined stock and price operation.');
+                $out=vsr_receive($d); break;
+            case 'stock_receive_price':
+                if (!array_key_exists('price_mode',$d)) throw new RuntimeException('Missing price choice.');
+                $out=vsr_receive($d); break;
             case 'stock_receipt_status': $out=vsr_status($d['request_key']??''); break;
             default: throw new RuntimeException('Invalid operation.');
         }
