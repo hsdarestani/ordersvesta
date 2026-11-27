@@ -58,6 +58,7 @@ from app import tracking_status as tstatus
 from app import product_route_recovery as prr
 # The SMS feature is a separate website-order workflow and never uses the marketplace session.
 from app import sms_website_flow as sms_flow
+from app import stock_receipt as stock
 # Paid Vestaland orders are verified against Hamoon and then written through the signed WP bridge.
 from app.vestaland_order_sync import VestalandOrderSyncHTTP
 
@@ -82,6 +83,11 @@ LEGACY_ACCOUNTING_LABELS = {
 
 async def routed_text(update, ctx):
     value = (update.message.text or '').strip()
+    if value == stock.LABEL:
+        if await m.access(update):
+            sms_flow.clear_state(update.effective_user.id)
+            await stock.text(update, ctx)
+        return
     if value in {'📦 رهگیری شاپینو', '📤 ارسال فایل رهگیری'}:
         # Shopino is always explicit and independent from the website SMS inbox.
         # Old "await_file" state must not hijack a Shopino spreadsheet.
@@ -118,12 +124,16 @@ async def routed_text(update, ctx):
             'از «➕ ثبت محصول جدید» استفاده کنید.',
             reply_markup=ops.main_menu(),
         )
+    if await stock.text(update, ctx):
+        return
     return await sms_flow.text(update, ctx, _base_text_handler)
 
 
 async def routed_callback(update, ctx):
     q = update.callback_query
     action = q.data or ''
+    if action.startswith('stock:'):
+        return await stock.callback(update, ctx)
     if action.startswith(('mahak:', 'mahaksite:', 'mahakcontent:')):
         if not m.allowed(q.from_user.id):
             return await q.answer('دسترسی ندارید', show_alert=True)
