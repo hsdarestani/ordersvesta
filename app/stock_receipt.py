@@ -59,11 +59,25 @@ async def confirm(chat, uid, d):
     if d.get('price_mode'):
         label = 'قیمت اصلی' if d['price_mode'] == 'regular' else 'قیمت تخفیف'
         change = label + ' جدید: ' + fmt_price(d['new_price'], p)
+    rows = [[('✅ تأیید نهایی', f"stock:apply:{d['token']}")]]
+    if p.get('price_enabled') and p.get('price_version'):
+        rows.append([('✏️ تغییر قیمت', f"stock:editprice:{d['token']}")])
+    rows.append([('لغو و جست‌وجوی جدید', f"stock:reset:{d['token']}")])
     await chat.send_message(
         describe(p) + f"\nتعداد ورودی: {d['amount']}\nموجودی پس از شارژ: {p['quantity'] + d['amount']}\n{change}\n"
         'اطلاعات را بررسی و تأیید کنید.',
-        reply_markup=keyboard([[('✅ تأیید نهایی', f"stock:apply:{d['token']}")],
-                               [('لغو و جست‌وجوی جدید', f"stock:reset:{d['token']}")]]))
+        reply_markup=keyboard(rows))
+
+
+async def price_choices(chat, uid, d):
+    p = d['selected']
+    session(uid, 'price_choice', d)
+    rows = [[('✏️ تغییر قیمت اصلی', f"stock:regular:{d['token']}")]]
+    if p.get('sale_price') not in ('', None):
+        rows.append([('✏️ تغییر قیمت تخفیف', f"stock:sale:{d['token']}")])
+    rows.append([('بدون تغییر قیمت', f"stock:keepprice:{d['token']}")])
+    await chat.send_message('قیمت را هم تغییر می‌دهید؟\n' + describe(p),
+                            reply_markup=keyboard(rows))
 
 
 def keyboard(rows):
@@ -170,20 +184,20 @@ async def text(update, ctx):
         try:
             if state['step'] == 'quantity':
                 n = quantity(value)
-                p = d['selected']
-                d.update(amount=n, request_key=secrets.token_hex(16))
+                previous = d['selected']
+                # Re-read the live product rather than using pre-deployment SQLite state.
+                p = (await call('stock_detail', {'id': previous['id']}))['product']
+                if p['identity'] != previous['identity'] or p['quantity'] != previous['quantity'] or not p.get('receivable'):
+                    await chat.send_message('موجودی یا مشخصات کالا تغییر کرده است. دوباره محصول را انتخاب کنید.')
+                    await begin(update)
+                    return True
+                if not p.get('price_enabled') or not p.get('price_version'):
+                    await chat.send_message('اطلاعات قیمت از سایت دریافت نشد. ثبت انجام نشد؛ دوباره تلاش کنید.')
+                    return True
+                d.update(selected=p, amount=n, request_key=secrets.token_hex(16), token=secrets.token_hex(6))
                 d.pop('price_mode', None)
                 d.pop('new_price', None)
-                if p.get('price_enabled') and p.get('price_version'):
-                    session(uid, 'price_choice', d)
-                    rows = [[('بدون تغییر قیمت', f"stock:keepprice:{d['token']}")],
-                            [('تغییر قیمت اصلی', f"stock:regular:{d['token']}")]]
-                    if p.get('sale_price') not in ('', None):
-                        rows.append([('تغییر قیمت تخفیف', f"stock:sale:{d['token']}")])
-                    await chat.send_message('قیمت را هم تغییر می‌دهید؟\n' + describe(p),
-                                            reply_markup=keyboard(rows))
-                else:
-                    await confirm(chat, uid, d)
+                await price_choices(chat, uid, d)
             elif state['step'] == 'price':
                 n = price(value)
                 p = d['selected']
@@ -247,7 +261,19 @@ async def callback(update, ctx):
                     d.update(selected=p, token=secrets.token_hex(6))
                     session(uid, 'quantity', d)
                     await chat.send_message(describe(p) + '\nچند عدد به موجودی اضافه شود؟')
+            elif action == 'editprice' and state['step'] == 'confirm':
+                p = (await call('stock_detail', {'id': d['selected']['id']}))['product']
+                if p['identity'] != d['selected']['identity'] or p['quantity'] != d['selected']['quantity']:
+                    await chat.send_message('موجودی یا مشخصات کالا تغییر کرده است. دوباره جست‌وجو کنید.')
+                    return True
+                if not p.get('price_enabled') or not p.get('price_version'):
+                    await chat.send_message('اطلاعات قیمت از سایت دریافت نشد.')
+                    return True
+                d.update(selected=p, token=secrets.token_hex(6))
+                await price_choices(chat, uid, d)
             elif action == 'keepprice' and state['step'] == 'price_choice':
+                d.pop('price_mode', None)
+                d.pop('new_price', None)
                 await confirm(chat, uid, d)
             elif action in {'regular', 'sale'} and state['step'] == 'price_choice':
                 p = d['selected']
