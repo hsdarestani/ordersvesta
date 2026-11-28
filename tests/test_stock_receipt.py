@@ -5,6 +5,8 @@ class StockQuantityTests(unittest.TestCase):
     def test_positive_persian_digits(self):
         self.assertEqual(quantity('۱۲'), 12)
         self.assertEqual(quantity('٣'), 3)
+    def test_zero_only_for_absolute_inventory(self):
+        self.assertEqual(quantity('۰', allow_zero=True), 0)
     def test_invalid_quantity(self):
         for v in ('0', '-1', '1.5', '10001', '12 units', ''):
             with self.subTest(v=v), self.assertRaises(ValueError):
@@ -40,6 +42,25 @@ class StockPriceFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('✏️ تغییر قیمت اصلی', labels)
             self.assertIn('✏️ تغییر قیمت تخفیف', labels)
             self.assertIn('بدون تغییر قیمت', labels)
+
+class StockManagementTests(unittest.IsolatedAsyncioTestCase):
+    async def test_menu_contains_independent_operations(self):
+        from app import stock_receipt as sr
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+        p = dict(id=1, name='Test', quantity=5, receivable=True, price_enabled=True, price_version='a')
+        d = dict(selected=p, token='tok')
+        chat = SimpleNamespace(send_message=AsyncMock())
+        with patch.object(sr, 'session'):
+            await sr.management_choices(chat, 1, d)
+        labels = [b.text for row in chat.send_message.call_args.kwargs['reply_markup'].inline_keyboard for b in row]
+        for label in ('➕ افزایش موجودی','➖ کاهش موجودی','🔢 تعیین موجودی دقیق','✏️ فقط تغییر قیمت'):
+            self.assertIn(label, labels)
+    def test_preview_modes(self):
+        from app.stock_receipt import stock_summary
+        for mode, amount, expected in [('increase',2,'7'),('decrease',2,'3'),('set',0,'0')]:
+            self.assertIn('موجودی پس از ثبت: '+expected, stock_summary(dict(selected={'quantity':5},stock_mode=mode,amount=amount)))
+        self.assertEqual(stock_summary(dict(selected={'quantity':None},stock_mode='none',amount=0)), 'موجودی بدون تغییر')
 
 if __name__ == '__main__':
     unittest.main()

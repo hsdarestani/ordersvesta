@@ -15,13 +15,13 @@ LOCKS = {}
 TTL = 900
 
 
-def quantity(value):
+def quantity(value, allow_zero=False):
     value = str(value).translate(m.DIGITS).strip()
     if not re.fullmatch(r'[0-9]{1,5}', value):
         raise ValueError('تعداد را به صورت عدد صحیح مثبت وارد کنید.')
     n = int(value)
-    if not 1 <= n <= 10000:
-        raise ValueError('تعداد باید بین ۱ تا ۱۰۰۰۰ باشد.')
+    if not (0 if allow_zero else 1) <= n <= 10000:
+        raise ValueError('تعداد خارج از بازه مجاز است (حداکثر ۱۰۰۰۰).')
     return n
 
 
@@ -52,6 +52,32 @@ def fmt_price(value, p):
         return str(value) + ' ' + currency(p)
 
 
+def stock_summary(d):
+    p = d['selected']
+    mode = d.get('stock_mode', 'increase')
+    n = d['amount']
+    if mode == 'none':
+        return 'موجودی بدون تغییر'
+    current = p['quantity']
+    target = current + n if mode == 'increase' else current - n if mode == 'decrease' else n
+    label = {'increase': 'افزایش', 'decrease': 'کاهش', 'set': 'تعیین موجودی دقیق'}[mode]
+    return f'{label}: {n} عدد\nموجودی پس از ثبت: {target}'
+
+
+async def management_choices(chat, uid, d):
+    p = d['selected']
+    session(uid, 'management', d)
+    token = d['token']
+    rows = []
+    if p.get('receivable'):
+        rows.extend([[('➕ افزایش موجودی', f'stock:increase:{token}'), ('➖ کاهش موجودی', f'stock:decrease:{token}')],
+                     [('🔢 تعیین موجودی دقیق', f'stock:set:{token}')]])
+    if p.get('price_enabled') and p.get('price_version'):
+        rows.append([('✏️ فقط تغییر قیمت', f'stock:priceonly:{token}')])
+    rows.append([('جست‌وجوی کالای دیگر', f'stock:reset:{token}')])
+    await chat.send_message(describe(p) + '\nچه چیزی را تغییر می‌دهید؟', reply_markup=keyboard(rows))
+
+
 async def confirm(chat, uid, d):
     p = d['selected']
     session(uid, 'confirm', d)
@@ -64,7 +90,7 @@ async def confirm(chat, uid, d):
         rows.append([('✏️ تغییر قیمت', f"stock:editprice:{d['token']}")])
     rows.append([('لغو و جست‌وجوی جدید', f"stock:reset:{d['token']}")])
     await chat.send_message(
-        describe(p) + f"\nتعداد ورودی: {d['amount']}\nموجودی پس از شارژ: {p['quantity'] + d['amount']}\n{change}\n"
+        describe(p) + '\n' + stock_summary(d) + f'\n{change}\n'
         'اطلاعات را بررسی و تأیید کنید.',
         reply_markup=keyboard(rows))
 
@@ -75,7 +101,8 @@ async def price_choices(chat, uid, d):
     rows = [[('✏️ تغییر قیمت اصلی', f"stock:regular:{d['token']}")]]
     if p.get('sale_price') not in ('', None):
         rows.append([('✏️ تغییر قیمت تخفیف', f"stock:sale:{d['token']}")])
-    rows.append([('بدون تغییر قیمت', f"stock:keepprice:{d['token']}")])
+    if d.get('stock_mode') != 'none':
+        rows.append([('بدون تغییر قیمت', f"stock:keepprice:{d['token']}")])
     await chat.send_message('قیمت را هم تغییر می‌دهید؟\n' + describe(p),
                             reply_markup=keyboard(rows))
 
@@ -110,7 +137,7 @@ async def begin(update):
     uid = update.effective_user.id
     session(uid, 'search', {'chat': update.effective_chat.id})
     return await update.effective_message.reply_text(
-        '📦 شارژ موجودی\nبخشی از نام محصول یا کد کالا را بفرستید.\n'
+        '📦 مدیریت موجودی و قیمت\nبخشی از نام محصول یا کد کالا را بفرستید.\n'
         'محصولات ناموجود نیز در نتایج نمایش داده می‌شوند.',
         reply_markup=ops.cancel_menu())
 
@@ -183,7 +210,8 @@ async def text(update, ctx):
         d = state['data']
         try:
             if state['step'] == 'quantity':
-                n = quantity(value)
+                mode = d.get('stock_mode', 'increase')
+                n = quantity(value, allow_zero=mode == 'set')
                 previous = d['selected']
                 # Re-read the live product rather than using pre-deployment SQLite state.
                 p = (await call('stock_detail', {'id': previous['id']}))['product']
@@ -194,7 +222,9 @@ async def text(update, ctx):
                 if not p.get('price_enabled') or not p.get('price_version'):
                     await chat.send_message('اطلاعات قیمت از سایت دریافت نشد. ثبت انجام نشد؛ دوباره تلاش کنید.')
                     return True
-                d.update(selected=p, amount=n, request_key=secrets.token_hex(16), token=secrets.token_hex(6))
+                if mode == 'decrease' and n > p['quantity']:
+                    raise ValueError('تعداد کاهش نمی‌تواند بیشتر از موجودی فعلی باشد.')
+                d.update(selected=p, stock_mode=mode, amount=n, request_key=secrets.token_hex(16), token=secrets.token_hex(6))
                 d.pop('price_mode', None)
                 d.pop('new_price', None)
                 await price_choices(chat, uid, d)
@@ -207,6 +237,8 @@ async def text(update, ctx):
                     raise ValueError('قیمت تخفیف باید کمتر از قیمت اصلی باشد.')
                 d['new_price'] = n
                 await confirm(chat, uid, d)
+            elif state['step'] == 'management':
+                await management_choices(chat, uid, d)
             elif state['step'] == 'price_choice':
                 await chat.send_message('یکی از گزینه‌های تغییر یا حفظ قیمت را انتخاب کنید.')
             elif state['step'] == 'checking':
@@ -255,15 +287,35 @@ async def callback(update, ctx):
                 if p['type'] == 'variable':
                     d.update(parent=p['id'], page=1)
                     await cards(chat, uid, d, await call('stock_search', {'parent': p['id'], 'page': 1}))
-                elif not p.get('receivable'):
-                    await chat.send_message('موجودی مستقل و قابل شارژ برای این کالا مشخص نیست. مدل یا تنظیمات انبار را بررسی کنید.')
                 else:
                     d.update(selected=p, token=secrets.token_hex(6))
+                    await management_choices(chat, uid, d)
+            elif action in {'increase', 'decrease', 'set', 'priceonly'} and state['step'] == 'management':
+                p = (await call('stock_detail', {'id': d['selected']['id']}))['product']
+                if p['identity'] != d['selected']['identity']:
+                    await chat.send_message('مشخصات کالا تغییر کرده است؛ دوباره جست‌وجو کنید.')
+                    return True
+                if p.get('management_version') != 2:
+                    await chat.send_message('نسخه جدید مدیریت محصول در سایت هنوز در دسترس نیست.')
+                    return True
+                d.update(selected=p, token=secrets.token_hex(6))
+                d.pop('price_mode', None)
+                d.pop('new_price', None)
+                if action == 'priceonly':
+                    if not p.get('price_enabled') or not p.get('price_version'):
+                        return True
+                    d.update(stock_mode='none', amount=0, request_key=secrets.token_hex(16))
+                    await price_choices(chat, uid, d)
+                elif p.get('receivable'):
+                    d['stock_mode'] = action
                     session(uid, 'quantity', d)
-                    await chat.send_message(describe(p) + '\nچند عدد به موجودی اضافه شود؟')
+                    question = {'increase': 'چند عدد به موجودی اضافه شود؟',
+                                'decrease': 'چند عدد از موجودی کم شود؟',
+                                'set': 'موجودی نهایی چند عدد باشد؟ (صفر هم مجاز است)'}[action]
+                    await chat.send_message(describe(p) + '\n' + question)
             elif action == 'editprice' and state['step'] == 'confirm':
                 p = (await call('stock_detail', {'id': d['selected']['id']}))['product']
-                if p['identity'] != d['selected']['identity'] or p['quantity'] != d['selected']['quantity']:
+                if p['identity'] != d['selected']['identity'] or (d.get('stock_mode') != 'none' and p['quantity'] != d['selected']['quantity']):
                     await chat.send_message('موجودی یا مشخصات کالا تغییر کرده است. دوباره جست‌وجو کنید.')
                     return True
                 if not p.get('price_enabled') or not p.get('price_version'):
@@ -272,6 +324,8 @@ async def callback(update, ctx):
                 d.update(selected=p, token=secrets.token_hex(6))
                 await price_choices(chat, uid, d)
             elif action == 'keepprice' and state['step'] == 'price_choice':
+                if d.get('stock_mode') == 'none':
+                    return True
                 d.pop('price_mode', None)
                 d.pop('new_price', None)
                 await confirm(chat, uid, d)
@@ -286,9 +340,9 @@ async def callback(update, ctx):
                 p = d['selected']
                 payload = {'id': p['id'], 'identity': p['identity'], 'expected': p['quantity'],
                            'amount': d['amount'], 'request_key': d['request_key'], 'actor': str(uid)}
-                operation = 'stock_receive'
+                operation = 'stock_manage'
+                payload['stock_mode'] = d.get('stock_mode', 'increase')
                 if d.get('price_mode'):
-                    operation = 'stock_receive_price'
                     payload.update(price_mode=d['price_mode'], new_price=d['new_price'],
                                    price_version=p['price_version'])
                 # Consume the UI selection before the write. The same request key remains
@@ -308,10 +362,13 @@ async def callback(update, ctx):
                         label = 'قیمت اصلی' if price_result['mode'] == 'regular' else 'قیمت تخفیف'
                         price_line = f"{label} ثبت‌شده: {fmt_price(price_result['value'], p)}\n"
                     await chat.send_message(
-                        f"✅ شارژ ثبت شد.\n{p['name']}\nورودی: {d['amount']} عدد\n"
-                        f"موجودی ثبت‌شده: {result['quantity']}\n" + price_line +
+                        f"✅ تغییرات ثبت شد.\n{p['name']}\n"
+                        + ('موجودی بدون تغییر\n' if d.get('stock_mode') == 'none' else f"موجودی ثبت‌شده: {result['quantity']}\n") + price_line +
                         'برای کالای بعدی نام یا کد آن را بفرستید.')
                     session(uid, 'search', {'chat': chat.id})
+                elif result.get('status') in {'price_pending', 'price_unverified'}:
+                    await chat.send_message('⚠️ نتیجه تغییر قیمت هنوز تأیید نشده است. موجودی تغییر نکرده.\n' + f"شناسه پیگیری: {d['request_key']}")
+                    session(uid, 'checking', d)
                 elif result.get('status') in {'stock_applied_price_pending', 'stock_applied_price_unverified'}:
                     await chat.send_message(
                         f"⚠️ موجودی ثبت شد: {result.get('quantity')} عدد.\n"

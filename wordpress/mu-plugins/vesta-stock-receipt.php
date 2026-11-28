@@ -33,6 +33,7 @@ function vsr_describe($p) {
         'sku'=>$p->get_sku(),'type'=>$p->get_type(),'attributes'=>wp_strip_all_tags($attrs),
         'quantity'=>is_numeric($qty) && (float)$qty===(float)(int)$qty ? (int)$qty : null,
         'image_id'=>$image,'identity'=>$identity,
+        'management_version'=>2,
         'price_enabled'=>!$p->is_type('variable'),
         'currency'=>get_woocommerce_currency(),
         'regular_price'=>(string)$p->get_regular_price('edit'),
@@ -143,18 +144,45 @@ function vsr_status($key) {
     return $r ?: ['status'=>'unknown'];
 }
 
-function vsr_receive($d) {
+// Compare-and-set negative/absolute adjustments so a simultaneous customer order
+// cannot be overwritten by an administrator's stale stock snapshot.
+function vsr_guarded_stock($p,$expected,$target) {
+    global $wpdb;
+    $id=$p->get_id();
+    if ($target<0) throw new RuntimeException('Negative stock is not allowed.');
+    if ($target===$expected) return $expected;
+    $rows=$wpdb->get_results($wpdb->prepare("SELECT meta_id,meta_value FROM {$wpdb->postmeta} WHERE post_id=%d AND meta_key='_stock'",$id),ARRAY_A);
+    if (count($rows)!==1 || !is_numeric($rows[0]['meta_value']) || (float)$rows[0]['meta_value']!==(float)$expected)
+        throw new RuntimeException('Stock changed; search again.');
+    $changed=$wpdb->query($wpdb->prepare("UPDATE {$wpdb->postmeta} SET meta_value=%s WHERE meta_id=%d AND meta_value=%s",
+        (string)$target,(int)$rows[0]['meta_id'],$rows[0]['meta_value']));
+    if ($changed!==1) throw new RuntimeException('Stock changed; search again.');
+    wp_cache_delete($id,'post_meta');
+    // Run Woo's native stock synchronization without adding or removing another unit.
+    $fresh=wc_get_product($id);
+    $new=wc_update_product_stock($fresh,0,'increase');
+    if (!is_numeric($new)) throw new RuntimeException('Stock write needs reconciliation.');
+    return (int)$new;
+}
+
+function vsr_receive($d,$manage=false) {
     global $wpdb;
     $key=vsr_key($d['request_key']??'');
     $id=absint($d['id']??0);
     $amount=$d['amount']??null;
     $expected=$d['expected']??null;
     $actor=(string)($d['actor']??'');
-    if (!$id || !is_int($amount) || $amount<1 || $amount>10000 ||
-        !is_int($expected) || !preg_match('/^[0-9]{1,20}$/D',$actor))
-        throw new InvalidArgumentException('Invalid stock receipt.');
+    $mode=$manage ? ($d['stock_mode']??'') : 'increase';
     $price_requested=array_key_exists('price_mode',$d);
+    if (!$id || !in_array($mode,['increase','decrease','set','none'],true) ||
+        !is_int($amount) || $amount<0 || $amount>10000 ||
+        (in_array($mode,['increase','decrease'],true) && $amount===0) ||
+        ($mode==='none' && ($amount!==0 || !$price_requested)) ||
+        ($mode!=='none' && !is_int($expected)) ||
+        !preg_match('/^[0-9]{1,20}$/D',$actor))
+        throw new InvalidArgumentException('Invalid stock receipt.');
     $fingerprint=[$id,$amount,$expected,$actor,$d['identity']??''];
+    if ($manage) $fingerprint[]=['stock_mode',$mode];
     if ($price_requested) $fingerprint[]=['price',$d['price_mode'],$d['new_price']??null,$d['price_version']??null];
     $hash=hash('sha256',wp_json_encode($fingerprint));
     $lock='vsr_product_'.$id;
@@ -168,8 +196,10 @@ function vsr_receive($d) {
         }
         $p=vsr_product($id);
         $item=vsr_describe($p);
-        if (!$item['receivable'] || !hash_equals($item['identity'],(string)($d['identity']??'')) ||
-            $item['quantity']!==$expected) throw new RuntimeException('Stock or identity changed; search again.');
+        if ($p->is_type('variable') || !hash_equals($item['identity'],(string)($d['identity']??'')) ||
+            ($mode!=='none' && (!$item['receivable'] || $item['quantity']!==$expected)))
+            throw new RuntimeException('Stock or identity changed; search again.');
+        if ($mode==='decrease' && $expected<$amount) throw new RuntimeException('Negative stock is not allowed.');
         // Production activation is explicit, after the inventory owner and downstream sync
         // have been verified. Read/search is usable without allowing any writes.
         if (get_option('vsr_stock_receipt_enabled','no')!=='yes')
@@ -178,17 +208,23 @@ function vsr_receive($d) {
         $record=['status'=>'pending','hash'=>$hash,'product_id'=>$id,'name'=>$item['name'],
             'sku'=>$item['sku'],'actor'=>$actor,'before'=>$expected,'amount'=>$amount,
             'created_at'=>gmdate('c')];
+        if ($manage) $record['stock_mode']=$mode;
         if ($plan) $record['price_plan']=$plan;
         if (!add_option($key,$record,'',false)) throw new RuntimeException('Receipt already exists.');
         // Atomic WooCommerce increase: never replace stock or edit the variable parent.
         // A crash after the write leaves a pending receipt for manual reconciliation.
-        $new=wc_update_product_stock($p,$amount,'increase');
-        if (!is_numeric($new)) throw new RuntimeException('Stock write needs reconciliation.');
-        $record['quantity']=(int)$new;
+        if ($mode==='none') {
+            $record['quantity']=$item['quantity'];
+        } else {
+            $new=$mode==='increase' ? wc_update_product_stock($p,$amount,'increase') :
+                vsr_guarded_stock($p,$expected,$mode==='set'?$amount:$expected-$amount);
+            if (!is_numeric($new)) throw new RuntimeException('Stock write needs reconciliation.');
+            $record['quantity']=(int)$new;
+        }
         if ($plan) {
             // Persist the stock outcome before touching price. Never replay a partially
             // completed stock receipt, including after a PHP timeout.
-            $record['status']='stock_applied_price_pending';
+            $record['status']=$mode==='none'?'price_pending':'stock_applied_price_pending';
             if (!update_option($key,$record,false)) throw new RuntimeException('Stock audit needs reconciliation.');
             try {
                 $fresh=vsr_product($id);
@@ -208,7 +244,7 @@ function vsr_receive($d) {
                     'regular'=>(string)$check->get_regular_price('edit'),'sale'=>(string)$check->get_sale_price('edit'),
                     'currency'=>$plan['currency']];
             } catch(Throwable $e) {
-                $record['status']='stock_applied_price_unverified';
+                $record['status']=$mode==='none'?'price_unverified':'stock_applied_price_unverified';
                 $record['price_error']='Price update requires manual verification.';
                 update_option($key,$record,false);
                 return $record;
@@ -233,7 +269,7 @@ function vsr_receive($d) {
 }
 
 // Only intercept our own signed operations, after WooCommerce registers products.
-function vsr_ops() { return ['stock_search','stock_detail','stock_photo','stock_receive','stock_receive_price','stock_receipt_status']; }
+function vsr_ops() { return ['stock_search','stock_detail','stock_photo','stock_receive','stock_receive_price','stock_manage','stock_receipt_status']; }
 add_action('plugins_loaded',function() {
     if ((string)($_GET['vbb']??'')!=='2' || !in_array(sanitize_key($_GET['o']??''),vsr_ops(),true)) return;
     remove_action('plugins_loaded','vbb_handle_v2_request',PHP_INT_MAX);
@@ -257,6 +293,7 @@ function vsr_dispatch() {
             case 'stock_receive_price':
                 if (!array_key_exists('price_mode',$d)) throw new RuntimeException('Missing price choice.');
                 $out=vsr_receive($d); break;
+            case 'stock_manage': $out=vsr_receive($d,true); break;
             case 'stock_receipt_status': $out=vsr_status($d['request_key']??''); break;
             default: throw new RuntimeException('Invalid operation.');
         }
