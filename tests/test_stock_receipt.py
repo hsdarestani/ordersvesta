@@ -43,6 +43,20 @@ class StockPriceFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('✏️ تغییر قیمت تخفیف', labels)
             self.assertIn('بدون تغییر قیمت', labels)
 
+class NewDiscountTests(unittest.IsolatedAsyncioTestCase):
+    async def test_no_existing_discount_still_has_both_price_buttons(self):
+        from app import stock_receipt as sr
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+        product = dict(id=1, name='Test', quantity=3, regular_price='500000', sale_price='',
+                       currency='IRT', price_enabled=True, price_version='v1')
+        data = dict(selected=product, token='tok', stock_mode='none')
+        chat = SimpleNamespace(send_message=AsyncMock())
+        with patch.object(sr, 'session'):
+            await sr.price_choices(chat, 1, data)
+        rows = chat.send_message.call_args.kwargs['reply_markup'].inline_keyboard
+        self.assertEqual([b.text for b in rows[0]], ['✏️ تغییر قیمت اصلی', '✏️ تغییر قیمت تخفیف'])
+
 class StockManagementTests(unittest.IsolatedAsyncioTestCase):
     async def test_menu_contains_independent_operations(self):
         from app import stock_receipt as sr

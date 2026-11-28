@@ -98,9 +98,8 @@ async def confirm(chat, uid, d):
 async def price_choices(chat, uid, d):
     p = d['selected']
     session(uid, 'price_choice', d)
-    rows = [[('✏️ تغییر قیمت اصلی', f"stock:regular:{d['token']}")]]
-    if p.get('sale_price') not in ('', None):
-        rows.append([('✏️ تغییر قیمت تخفیف', f"stock:sale:{d['token']}")])
+    rows = [[('✏️ تغییر قیمت اصلی', f"stock:regular:{d['token']}"),
+             ('✏️ تغییر قیمت تخفیف', f"stock:sale:{d['token']}")]]
     if d.get('stock_mode') != 'none':
         rows.append([('بدون تغییر قیمت', f"stock:keepprice:{d['token']}")])
     await chat.send_message('قیمت را هم تغییر می‌دهید؟\n' + describe(p),
@@ -233,8 +232,11 @@ async def text(update, ctx):
                 p = d['selected']
                 if d['price_mode'] == 'regular' and p.get('sale_price') not in ('', None) and float(n) <= float(p['sale_price']):
                     raise ValueError('قیمت اصلی باید بیشتر از قیمت تخفیف فعلی باشد.')
-                if d['price_mode'] == 'sale' and float(n) >= float(p['regular_price']):
-                    raise ValueError('قیمت تخفیف باید کمتر از قیمت اصلی باشد.')
+                if d['price_mode'] == 'sale':
+                    if not p.get('regular_price'):
+                        raise ValueError('ابتدا قیمت اصلی را ثبت کنید.')
+                    if float(n) >= float(p['regular_price']):
+                        raise ValueError('قیمت تخفیف باید کمتر از قیمت اصلی باشد.')
                 d['new_price'] = n
                 await confirm(chat, uid, d)
             elif state['step'] == 'management':
@@ -331,7 +333,8 @@ async def callback(update, ctx):
                 await confirm(chat, uid, d)
             elif action in {'regular', 'sale'} and state['step'] == 'price_choice':
                 p = d['selected']
-                if action == 'sale' and p.get('sale_price') in ('', None):
+                if action == 'sale' and not p.get('regular_price'):
+                    await chat.send_message('ابتدا قیمت اصلی را ثبت کنید.')
                     return True
                 d['price_mode'] = action
                 session(uid, 'price', d)

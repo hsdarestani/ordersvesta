@@ -63,8 +63,8 @@ function vsr_price_plan($p,$d) {
     $sale=(string)$p->get_sale_price('edit');
     if ($mode==='regular' && $sale!=='' && (float)$value<=(float)$sale)
         throw new RuntimeException('Regular price must be higher than existing sale price.');
-    if ($mode==='sale' && ($sale==='' || $regular==='' || (float)$value>=(float)$regular))
-        throw new RuntimeException('Existing sale price must be lower than regular price.');
+    if ($mode==='sale' && ($regular==='' || (float)$value>=(float)$regular))
+        throw new RuntimeException('Sale price must be lower than regular price.');
     return ['mode'=>$mode,'value'=>$value,'before_regular'=>$regular,'before_sale'=>$sale,
         'version'=>vsr_price_version($p),'currency'=>get_woocommerce_currency()];
 }
@@ -231,7 +231,15 @@ function vsr_receive($d,$manage=false) {
                 if (!hash_equals($plan['version'],vsr_price_version($fresh)))
                     throw new RuntimeException('Price changed after stock update.');
                 if ($plan['mode']==='regular') $fresh->set_regular_price($plan['value']);
-                else $fresh->set_sale_price($plan['value']);
+                else {
+                    $fresh->set_sale_price($plan['value']);
+                    // A newly created discount starts now; do not inherit obsolete dates.
+                    // Existing sale schedules are preserved when changing an existing discount.
+                    if ($plan['before_sale']==='') {
+                        $fresh->set_date_on_sale_from(null);
+                        $fresh->set_date_on_sale_to(null);
+                    }
+                }
                 $fresh->save();
                 $check=vsr_product($id);
                 $actual=$plan['mode']==='regular' ? $check->get_regular_price('edit') : $check->get_sale_price('edit');
