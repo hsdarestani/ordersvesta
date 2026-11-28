@@ -25,6 +25,9 @@ jobs:
           from app.bridge_client import BridgeWooClient
           import base64
           b=BridgeWooClient()
+          item=b.call('stock_detail',{'id':69704})['product']
+          print('LIVE_PRICE_FIELDS='+str({k:item.get(k) for k in ('id','price_enabled','currency','regular_price','sale_price','current_price')}))
+          assert item.get('price_enabled') is True and item.get('price_version') and item.get('currency')=='IRT'
           for query in ('کرم','شامپو','ماسک','رژ'):
               result=b.call('stock_search', {'q':query,'page':1})
               if result.get('products'):
@@ -42,6 +45,7 @@ jobs:
               if photo_count:
                   break
           assert photo_count
+          print('LIVE_PRICE_DETAIL_PASS=yes')
           assert b.call('stock_receipt_status',{'request_key':'0'*32})['status']=='unknown'
           print('SIGNED_STOCK_SEARCH_DETAIL_PHOTO_PASS=yes')
           print('STOCK_RECEIPT_STATUS_READ_PASS=yes')
