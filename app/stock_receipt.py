@@ -74,6 +74,9 @@ async def management_choices(chat, uid, d):
                      [('🔢 تعیین موجودی دقیق', f'stock:set:{token}')]])
     if p.get('price_enabled') and p.get('price_version'):
         rows.append([('✏️ فقط تغییر قیمت', f'stock:priceonly:{token}')])
+    if p.get('parent_id'):
+        rows.append([('🏷️ قیمت همه مدل‌ها', f"stock:group:{token}:{p['parent_id']}")])
+        rows.append([('↩️ انتخاب مدل دیگر', f"stock:models:{token}:{p['parent_id']}")])
     rows.append([('جست‌وجوی کالای دیگر', f'stock:reset:{token}')])
     await chat.send_message(describe(p) + '\nچه چیزی را تغییر می‌دهید؟', reply_markup=keyboard(rows))
 
@@ -154,10 +157,15 @@ def describe(p):
 
 async def cards(chat, uid, d, response):
     items = response.get('products', [])
-    d.update(items={str(p['id']): p for p in items}, token=secrets.token_hex(6))
+    # Keep selections from earlier pages valid within the same browsing session.
+    d.setdefault('browse_token', secrets.token_hex(6))
+    d.setdefault('items', {}).update({str(p['id']): p for p in items})
+    d['token'] = d['browse_token']
     session(uid, 'choose', d)
     if not items:
         return await chat.send_message('محصولی پیدا نشد. نام یا کد دیگری بفرستید.')
+    if d.get('parent') and d.get('page') == 1:
+        await chat.send_message('برای تغییر قیمت همه کدهای این محصول، گزینه زیر را انتخاب کنید؛ یا یک مدل را جداگانه انتخاب کنید.', reply_markup=keyboard([[('🏷️ قیمت همه مدل‌ها', f"stock:group:{d['token']}:{d['parent']}")]]))
     for p in items:
         k = keyboard([[('انتخاب مدل' if p['type'] == 'variable' else 'انتخاب این محصول',
                        f"stock:pick:{d['token']}:{p['id']}")]])
@@ -178,8 +186,36 @@ async def cards(chat, uid, d, response):
 
 
 async def search(chat, uid, d, value):
-    d.update(query=value, page=1, parent=0)
+    d.update(query=value, page=1, parent=0, items={}, browse_token=secrets.token_hex(6))
     await cards(chat, uid, d, await call('stock_search', {'q': value, 'page': 1}))
+
+
+def group_price_valid(group, mode, value):
+    for p in group['items']:
+        if mode == 'sale' and (not p.get('regular_price') or float(value) >= float(p['regular_price'])):
+            raise ValueError('قیمت تخفیفی باید کمتر از قیمت اصلی همه مدل‌ها باشد.')
+        if mode == 'regular' and p.get('sale_price') not in ('', None) and float(value) <= float(p['sale_price']):
+            raise ValueError('قیمت اصلی باید بیشتر از قیمت تخفیفی همه مدل‌ها باشد.')
+
+
+async def show_group(chat, uid, d, parent):
+    g = await call('stock_group_detail', {'id': parent})
+    d.update(group=g, token=secrets.token_hex(6), parent=parent)
+    session(uid, 'group_choice', d)
+    lines = [f"🏷️ {g['name']}", f"تعداد مدل‌های فعال: {g['count']}", 'موجودی هیچ مدلی تغییر نمی‌کند.']
+    for p in g['items'][:10]:
+        lines.append(f"{p.get('attributes') or p.get('sku') or p['id']}: {fmt_price(p.get('regular_price'), p)} | تخفیف: {fmt_price(p.get('sale_price'), p)}")
+    if g['count'] > 10:
+        lines.append(f"و {g['count']-10} مدل دیگر")
+    await chat.send_message('\n'.join(lines)[:3500], reply_markup=keyboard([
+        [('قیمت اصلی همه مدل‌ها', f"stock:greg:{d['token']}")],
+        [('قیمت تخفیفی همه مدل‌ها', f"stock:gsale:{d['token']}")],
+        [('↩️ انتخاب یک مدل', f"stock:models:{d['token']}:{parent}")]]))
+
+
+async def show_models(chat, uid, d, parent):
+    d.update(parent=parent, page=1, items={}, browse_token=secrets.token_hex(6))
+    await cards(chat, uid, d, await call('stock_search', {'parent': parent, 'page': 1}))
 
 
 async def text(update, ctx):
@@ -227,6 +263,18 @@ async def text(update, ctx):
                 d.pop('price_mode', None)
                 d.pop('new_price', None)
                 await price_choices(chat, uid, d)
+            elif state['step'] == 'group_price':
+                n = price(value)
+                g = d['group']
+                group_price_valid(g, d['group_mode'], n)
+                d.update(group_value=n, request_key=secrets.token_hex(16), token=secrets.token_hex(6))
+                session(uid, 'group_confirm', d)
+                label = 'اصلی' if d['group_mode']=='regular' else 'تخفیفی'
+                await chat.send_message(f"تأیید قیمت {label} همه {g['count']} مدل\n{g['name']}\nقیمت جدید: {fmt_price(n, g)}\nموجودی بدون تغییر",
+                    reply_markup=keyboard([[('✅ تأیید تغییر قیمت همه مدل‌ها', f"stock:gapply:{d['token']}")],
+                    [('↩️ انتخاب مدل', f"stock:models:{d['token']}:{g['id']}")]]))
+            elif state['step'] in {'group_choice','group_confirm'}:
+                await chat.send_message('یکی از دکمه‌های پیام را انتخاب کنید.')
             elif state['step'] == 'price':
                 n = price(value)
                 p = d['selected']
@@ -269,7 +317,9 @@ async def callback(update, ctx):
         return True
     async with LOCKS.setdefault(uid, asyncio.Lock()):
         state = live_state(uid, chat.id)
-        if not state or len(parts) < 3 or parts[2] != state['data'].get('token'):
+        valid = state and len(parts) >= 3 and (parts[2] == state['data'].get('token') or
+            (parts[1] == 'pick' and state['step'] in {'choose','management'} and parts[2] == state['data'].get('browse_token')))
+        if not valid:
             await q.answer('این انتخاب منقضی شده است؛ دوباره جست‌وجو کنید.', show_alert=True)
             return True
         await q.answer()
@@ -281,14 +331,42 @@ async def callback(update, ctx):
                 d['page'] += 1
                 await cards(chat, uid, d, await call('stock_search', {
                     'q': d['query'], 'parent': d['parent'], 'page': d['page']}))
-            elif action == 'pick' and state['step'] == 'choose' and len(parts) == 4:
+            elif action == 'models' and len(parts)==4 and state['step'] in {'management','group_choice','group_confirm','choose'}:
+                parent=int(parts[3])
+                if parent not in {d.get('parent'),d.get('selected',{}).get('parent_id'),d.get('group',{}).get('id')}:
+                    return True
+                await show_models(chat,uid,d,parent)
+            elif action == 'group' and len(parts)==4 and state['step'] in {'choose','management'}:
+                parent=int(parts[3])
+                if parent not in {d.get('parent'),d.get('selected',{}).get('parent_id')}:
+                    return True
+                await show_group(chat,uid,d,parent)
+            elif action in {'greg','gsale'} and state['step']=='group_choice':
+                d['group_mode']='regular' if action=='greg' else 'sale'
+                session(uid,'group_price',d)
+                await chat.send_message('قیمت یکسان جدید همه مدل‌ها را به '+currency(d['group'])+' وارد کنید.')
+            elif action=='gapply' and state['step']=='group_confirm':
+                g=d['group']
+                session(uid,'checking',d)
+                try:
+                    result=await call('stock_group_price',{'id':g['id'],'version':g['version'],
+                        'price_mode':d['group_mode'],'new_price':d['group_value'],'actor':str(uid),'request_key':d['request_key']})
+                except Exception:
+                    try: result=await call('stock_receipt_status',{'request_key':d['request_key']})
+                    except Exception: result={}
+                count=len(result.get('applied_ids',[]))
+                if result.get('status')=='applied' and count==g['count']:
+                    await chat.send_message(f"✅ قیمت هر {count} مدل ثبت شد.\n{g['name']}\nموجودی بدون تغییر.")
+                    await show_models(chat,uid,d,g['id'])
+                else:
+                    await chat.send_message(f"⚠️ ثبت گروهی نیاز به بررسی دارد. {count} مدل تأیید شده از {g['count']}. موجودی تغییر نکرده است.\nشناسه پیگیری: {d['request_key']}")
+            elif action == 'pick' and state['step'] in {'choose','management'} and len(parts) == 4:
                 selected = d['items'].get(parts[3])
                 if not selected:
                     return True
                 p = (await call('stock_detail', {'id': selected['id']}))['product']
                 if p['type'] == 'variable':
-                    d.update(parent=p['id'], page=1)
-                    await cards(chat, uid, d, await call('stock_search', {'parent': p['id'], 'page': 1}))
+                    await show_models(chat, uid, d, p['id'])
                 else:
                     d.update(selected=p, token=secrets.token_hex(6))
                     await management_choices(chat, uid, d)
@@ -368,7 +446,10 @@ async def callback(update, ctx):
                         f"✅ تغییرات ثبت شد.\n{p['name']}\n"
                         + ('موجودی بدون تغییر\n' if d.get('stock_mode') == 'none' else f"موجودی ثبت‌شده: {result['quantity']}\n") + price_line +
                         'برای کالای بعدی نام یا کد آن را بفرستید.')
-                    session(uid, 'search', {'chat': chat.id})
+                    if p.get('parent_id'):
+                        await show_models(chat,uid,d,p['parent_id'])
+                    else:
+                        session(uid, 'search', {'chat': chat.id})
                 elif result.get('status') in {'price_pending', 'price_unverified'}:
                     await chat.send_message('⚠️ نتیجه تغییر قیمت هنوز تأیید نشده است. موجودی تغییر نکرده.\n' + f"شناسه پیگیری: {d['request_key']}")
                     session(uid, 'checking', d)

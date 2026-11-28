@@ -33,7 +33,7 @@ function vsr_describe($p) {
         'sku'=>$p->get_sku(),'type'=>$p->get_type(),'attributes'=>wp_strip_all_tags($attrs),
         'quantity'=>is_numeric($qty) && (float)$qty===(float)(int)$qty ? (int)$qty : null,
         'image_id'=>$image,'identity'=>$identity,
-        'management_version'=>2,
+        'management_version'=>2,'parent_id'=>(int)$p->get_parent_id(),
         'price_enabled'=>!$p->is_type('variable'),
         'currency'=>get_woocommerce_currency(),
         'regular_price'=>(string)$p->get_regular_price('edit'),
@@ -277,7 +277,94 @@ function vsr_receive($d,$manage=false) {
 }
 
 // Only intercept our own signed operations, after WooCommerce registers products.
-function vsr_ops() { return ['stock_search','stock_detail','stock_photo','stock_receive','stock_receive_price','stock_manage','stock_receipt_status']; }
+function vsr_group($id) {
+    global $wpdb;
+    $parent=vsr_product($id);
+    if (!$parent->is_type('variable')) throw new RuntimeException('Not a variable product.');
+    $ids=$wpdb->get_col($wpdb->prepare("SELECT ID FROM {$wpdb->posts} WHERE post_parent=%d AND post_type='product_variation' AND post_status='publish' ORDER BY menu_order,ID LIMIT 101",$id));
+    if (!$ids || count($ids)>100) throw new RuntimeException('Group must contain 1 to 100 active variants.');
+    $items=[];$versions=[];
+    foreach($ids as $vid) {
+        $v=vsr_product($vid);$item=vsr_describe($v);
+        $items[]=$item;
+        $versions[]=[$item['id'],$item['identity'],$item['price_version']];
+    }
+    return ['id'=>(int)$id,'name'=>$parent->get_name(),'currency'=>get_woocommerce_currency(),
+        'count'=>count($items),'items'=>$items,'version'=>hash('sha256',wp_json_encode($versions))];
+}
+function vsr_group_price($d) {
+    global $wpdb;
+    $id=absint($d['id']??0);$key=vsr_key($d['request_key']??'');
+    $actor=(string)($d['actor']??'');
+    if (!$id || !preg_match('/^[0-9]{1,20}$/D',$actor) ||
+        get_option('vsr_stock_receipt_enabled','no')!=='yes') throw new RuntimeException('Group price write unavailable.');
+    $hash=hash('sha256',wp_json_encode(['group',$id,$actor,$d['version']??'',$d['price_mode']??'',$d['new_price']??'']));
+    $lock='vsr_group_'.$id;$locks=[];
+    if ((int)$wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s,8)',$lock))!==1) throw new RuntimeException('Group busy.');
+    try {
+        $old=get_option($key,[]);
+        if ($old) {
+            if (($old['hash']??'')!==$hash) throw new RuntimeException('Receipt key conflict.');
+            return $old;
+        }
+        $group=vsr_group($id);
+        if (!hash_equals($group['version'],(string)($d['version']??''))) throw new RuntimeException('Group or prices changed; preview again.');
+        // Lock every child in a deterministic order, sharing the single-item lock namespace.
+        $ids=array_column($group['items'],'id');sort($ids,SORT_NUMERIC);
+        foreach($ids as $vid) {
+            $l='vsr_product_'.$vid;
+            if ((int)$wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s,2)',$l))!==1) throw new RuntimeException('Variant busy.');
+            $locks[]=$l;
+        }
+        $group=vsr_group($id);
+        if (!hash_equals($group['version'],(string)($d['version']??''))) throw new RuntimeException('Group or prices changed; preview again.');
+        $plans=[];
+        foreach($group['items'] as $item) {
+            $v=vsr_product($item['id']);
+            $plans[$item['id']]=vsr_price_plan($v,['price_mode'=>$d['price_mode']??'','new_price'=>$d['new_price']??null,'price_version'=>$item['price_version']]);
+        }
+        // All validations happen before any price write. Record partial outcomes explicitly.
+        $record=['status'=>'group_pending','hash'=>$hash,'product_id'=>$id,'actor'=>$actor,'name'=>$group['name'],
+            'count'=>$group['count'],'applied_ids'=>[],'target_ids'=>array_keys($plans),'price_mode'=>$d['price_mode'],'new_price'=>$d['new_price'],'created_at'=>gmdate('c')];
+        if (!add_option($key,$record,'',false)) throw new RuntimeException('Receipt already exists.');
+        try {
+            foreach($plans as $vid=>$plan) {
+                $v=vsr_product($vid);
+                if (!hash_equals($plan['version'],vsr_price_version($v))) throw new RuntimeException('Variant price changed.');
+                if ($plan['mode']==='regular') $v->set_regular_price($plan['value']);
+                else {
+                    $v->set_sale_price($plan['value']);
+                    if ($plan['before_sale']==='') {$v->set_date_on_sale_from(null);$v->set_date_on_sale_to(null);}
+                }
+                $v->save();
+                $check=vsr_product($vid);
+                $actual=$plan['mode']==='regular'?$check->get_regular_price('edit'):$check->get_sale_price('edit');
+                if ((float)$actual!==(float)$plan['value'] ||
+                    ($plan['mode']==='regular' && (string)$check->get_sale_price('edit')!==$plan['before_sale']) ||
+                    ($plan['mode']==='sale' && (string)$check->get_regular_price('edit')!==$plan['before_regular']))
+                    throw new RuntimeException('Variant readback failed.');
+                $record['applied_ids'][]=$vid;
+                if (!update_option($key,$record,false)) throw new RuntimeException('Group audit failed.');
+            }
+            WC_Product_Variable::sync($id);
+            wc_delete_product_transients($id);
+            if (function_exists('rocket_clean_post')) rocket_clean_post($id);
+            $record['status']='applied';
+            $record['completed_at']=gmdate('c');
+        } catch(Throwable $e) {
+            $record['status']='group_unverified';
+            $record['error']='Group price update requires reconciliation.';
+            try { WC_Product_Variable::sync($id);wc_delete_product_transients($id);if(function_exists('rocket_clean_post'))rocket_clean_post($id); } catch(Throwable $ignored) {}
+        }
+        update_option($key,$record,false);
+        return $record;
+    } finally {
+        foreach(array_reverse($locks) as $l) $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)',$l));
+        $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)',$lock));
+    }
+}
+
+function vsr_ops() { return ['stock_search','stock_detail','stock_photo','stock_receive','stock_receive_price','stock_manage','stock_group_detail','stock_group_price','stock_receipt_status']; }
 add_action('plugins_loaded',function() {
     if ((string)($_GET['vbb']??'')!=='2' || !in_array(sanitize_key($_GET['o']??''),vsr_ops(),true)) return;
     remove_action('plugins_loaded','vbb_handle_v2_request',PHP_INT_MAX);
@@ -302,6 +389,8 @@ function vsr_dispatch() {
                 if (!array_key_exists('price_mode',$d)) throw new RuntimeException('Missing price choice.');
                 $out=vsr_receive($d); break;
             case 'stock_manage': $out=vsr_receive($d,true); break;
+            case 'stock_group_detail': $out=vsr_group(absint($d['id']??0)); break;
+            case 'stock_group_price': $out=vsr_group_price($d); break;
             case 'stock_receipt_status': $out=vsr_status($d['request_key']??''); break;
             default: throw new RuntimeException('Invalid operation.');
         }

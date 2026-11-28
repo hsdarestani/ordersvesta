@@ -76,5 +76,24 @@ class StockManagementTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('موجودی پس از ثبت: '+expected, stock_summary(dict(selected={'quantity':5},stock_mode=mode,amount=amount)))
         self.assertEqual(stock_summary(dict(selected={'quantity':None},stock_mode='none',amount=0)), 'موجودی بدون تغییر')
 
+class GroupPriceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_page_keeps_previous_selection(self):
+        from app import stock_receipt as sr
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+        d=dict(items={'1':{'id':1}},browse_token='same',token='same',parent=1,page=2)
+        p=dict(id=2,name='Second',type='variation',quantity=0)
+        chat=SimpleNamespace(send_message=AsyncMock(),send_photo=AsyncMock())
+        with patch.object(sr,'session'), patch.object(sr,'call',AsyncMock(return_value={})):
+            await sr.cards(chat,1,d,{'products':[p]})
+        self.assertEqual(d['token'],'same')
+        self.assertEqual(set(d['items']),{'1','2'})
+    def test_group_validates_every_variant(self):
+        from app.stock_receipt import group_price_valid
+        group={'items':[{'regular_price':'500','sale_price':'200'},{'regular_price':'300','sale_price':'100'}]}
+        group_price_valid(group,'sale','250')
+        with self.assertRaises(ValueError): group_price_valid(group,'sale','400')
+        with self.assertRaises(ValueError): group_price_valid(group,'regular','150')
+
 if __name__ == '__main__':
     unittest.main()
